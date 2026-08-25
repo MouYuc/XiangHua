@@ -125,7 +125,7 @@ Compose 默认挂载以下目录：
 输出目录保持在仓库 `output/` 内（默认如此），否则浏览器无法访问。
 
 **Q：端口被占用？**
-设置 `GRADIO_SERVER_PORT=7861` 后重启。
+设置 `XIANGHUA_SERVER_PORT=7861` 后重启。
 
 ## 目录结构
 

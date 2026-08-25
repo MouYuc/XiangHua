@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""广普训练后端（WebUI「训练」页专用，纯 Python，不依赖 gradio）。
+"""广普训练后端（WebUI「训练」页专用）。
 
 把 GPT-SoVITS 训练链路（切片 / Whisper 识别 / 人工校对 / 特征提取 / s1+s2 训练）
 封装为：

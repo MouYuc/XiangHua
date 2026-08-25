@@ -65,7 +65,7 @@ docker compose up -d
 | `REF_AUDIO` / `REF_TEXT` | 参考音频与文本 |
 | `TOP_K` / `TOP_P` / `TEMPERATURE` / `SAMPLE_STEPS` / `SPEED` / `PAUSE_SECOND` | 合成参数 |
 | `AUTO_LIGHTMID` | `0` 关闭自动转广普 |
-| `GRADIO_SERVER_NAME` / `GRADIO_SERVER_PORT` | 监听地址 / 端口（本机默认 127.0.0.1:7860，Docker Compose 默认 0.0.0.0:7860） |
+| `XIANGHUA_SERVER_NAME` / `XIANGHUA_SERVER_PORT` | 监听地址 / 端口（本机默认 127.0.0.1:7860，Docker Compose 默认 0.0.0.0:7860） |
 
 ## 常见问题
 
@@ -82,7 +82,7 @@ docker compose up -d
 说明广普补丁未应用：在 GPT-SoVITS 里执行 `git apply patches/pinyin.patch`，并重新跑训练的特征提取；已训练模型不受影响。
 
 **端口被占用？**
-设置 `GRADIO_SERVER_PORT=7861` 后重启。
+设置 `XIANGHUA_SERVER_PORT=7861` 后重启。
 
 ## 安全说明
 

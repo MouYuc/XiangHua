@@ -6,8 +6,8 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - GPT_SOVITS_ROOT=/workspace/GPT-SoVITS
-      - GRADIO_SERVER_NAME=0.0.0.0
-      - GRADIO_SERVER_PORT=7860
+      - XIANGHUA_SERVER_NAME=0.0.0.0
+      - XIANGHUA_SERVER_PORT=7860
     ports:
       - "7860:7860"
     volumes:

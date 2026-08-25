@@ -1,4 +1,4 @@
-"""Gradio-independent persistence, diagnostics, and synthesis primitives."""
+"""Persistence, diagnostics, and synthesis primitives for the application."""
 
 from __future__ import annotations
 

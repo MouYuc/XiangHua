@@ -50,8 +50,8 @@ COPY --from=frontend-build /frontend/dist /workspace/frontend/dist
 
 ENV PYTHONPATH="/workspace:/workspace/GPT-SoVITS"
 ENV GPT_SOVITS_ROOT="/workspace/GPT-SoVITS"
-ENV GRADIO_SERVER_NAME="0.0.0.0"
-ENV GRADIO_SERVER_PORT="7860"
+ENV XIANGHUA_SERVER_NAME="0.0.0.0"
+ENV XIANGHUA_SERVER_PORT="7860"
 
 WORKDIR /workspace
 EXPOSE 7860 9874
