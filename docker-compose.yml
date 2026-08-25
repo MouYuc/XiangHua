@@ -1,16 +1,26 @@
 services:
-  guangpu-tts:
+  XiangHua:
     image: ghcr.io/mouyuc/clone-youself:latest
-    container_name: guangpu-tts
+    container_name: XiangHua
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - GPT_SOVITS_ROOT=/workspace/GPT-SoVITS
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+    ports:
+      - "7860:7860"
     volumes:
       # 底模（公开）：下载后挂载到 GPT_SoVITS/pretrained_models 与 text/G2PWModel
       - ./models/pretrained_models:/workspace/GPT-SoVITS/GPT_SoVITS/pretrained_models
       - ./models/G2PWModel:/workspace/GPT-SoVITS/GPT_SoVITS/text/G2PWModel
-      # 你自己的训练产物（声音模型/数据集），按需挂载
-      - ./my_voice:/workspace/GPT-SoVITS/custom_data
-    working_dir: /workspace/GPT-SoVITS
-    command: ["/bin/bash"]
+      # 你自己的训练数据与产物（目录名保持和本机 GPT-SoVITS 一致）
+      - ./my_voice/custom_data:/workspace/GPT-SoVITS/custom_data
+      - ./my_voice/GPT_weights_v2Pro:/workspace/GPT-SoVITS/GPT_weights_v2Pro
+      - ./my_voice/SoVITS_weights_v2Pro:/workspace/GPT-SoVITS/SoVITS_weights_v2Pro
+      # WebUI 配置与历史记录
+      - ./.guangpu_webui:/workspace/.guangpu_webui
+      # 合成结果（浏览器可直接试听和下载）
+      - ./output:/workspace/output
+    working_dir: /workspace
+    command: ["python", "/workspace/frontend_only_launcher.py"]

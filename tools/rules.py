@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """广普"轻中浓度"转换规则（CLI 与 WebUI 共用）。
 
-维护说明：改这里即可同时影响 tools/guangpu_local_tts.py 与 tools/guangpu_webui.py。
+维护说明：改这里即可同时影响命令行与 WebUI 合成。
 规则顺序很重要：长词在前，避免"是"先吃掉"不是/是不是"。
 """
 

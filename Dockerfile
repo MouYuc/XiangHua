@@ -1,5 +1,12 @@
 # GuangPu-TTS 环境镜像（不含任何声音模型）
 # 基于 GPT-SoVITS 官方 torch-base，构建时克隆引擎并打广普补丁
+FROM node:24-alpine AS frontend-build
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend ./
+RUN npm run build
+
 FROM xxxxrt666/torch-base:cu12.6-full
 
 LABEL maintainer="MouYuc"
@@ -18,9 +25,9 @@ RUN git clone https://github.com/RVC-Boss/GPT-SoVITS.git /tmp/gs \
     && rm -rf /tmp/gs
 
 # 2. 应用广普发音词典补丁
-COPY patches/guangpu_pinyin.patch /tmp/guangpu_pinyin.patch
-RUN git apply /tmp/guangpu_pinyin.patch \
-    && rm /tmp/guangpu_pinyin.patch
+COPY patches/pinyin.patch /tmp/pinyin.patch
+RUN git apply /tmp/pinyin.patch \
+    && rm /tmp/pinyin.patch
 
 # 3. 构建工具 + ffmpeg（opencc/pyopenjtalk 等需要编译）
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,15 +37,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 4. 依赖（requirements.txt 由克隆的仓库提供）
 RUN pip install -r extra-req.txt --no-deps \
     && pip install -r requirements.txt \
-    && pip install faster-whisper noisereduce
+    && pip install faster-whisper noisereduce fastapi uvicorn python-multipart
 
-# 5. 拷贝本仓库工具与脚本
-COPY tools/guangpu_local_tts.py /workspace/tools/guangpu_local_tts.py
-COPY scripts/run_whisper.py scripts/fix_transcript.py scripts/build_train_configs.py /workspace/scripts/
+# 5. 拷贝本仓库工具、训练脚本与 WebUI 启动器
+COPY tools /workspace/tools
+COPY backend /workspace/backend
+COPY scripts /workspace/scripts
+COPY patches /workspace/patches
+COPY assets /workspace/assets
+COPY tools/frontend_only_launcher.py /workspace/frontend_only_launcher.py
+COPY --from=frontend-build /frontend/dist /workspace/frontend/dist
 
-ENV PYTHONPATH="/workspace/GPT-SoVITS"
+ENV PYTHONPATH="/workspace:/workspace/GPT-SoVITS"
 ENV GPT_SOVITS_ROOT="/workspace/GPT-SoVITS"
+ENV GRADIO_SERVER_NAME="0.0.0.0"
+ENV GRADIO_SERVER_PORT="7860"
 
-EXPOSE 9874
+WORKDIR /workspace
+EXPOSE 7860 9874
 
-CMD ["/bin/bash"]
+CMD ["python", "/workspace/frontend_only_launcher.py"]

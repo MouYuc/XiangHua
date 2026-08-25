@@ -1,11 +1,33 @@
 # 训练流程详解 · Training Guide
 
 目标：用 5~15 分钟自己的录音，训练出专属「广普」音色（GPT-SoVITS v2Pro）。
-本文档与 README「快速开始」配套，每步按 **目的 → 操作（命令行带注释）→ 结果** 组织。
+本文档与 README「快速开始」配套，每步按 **目的 → 操作 → 结果** 组织。
 
-> 目录约定：**仓库根目录** = 你运行 `python tools/guangpu_webui.py` 的目录；
+> **有两种等价方式**：
+> - **方式 A（推荐，无需命令行）**：用本仓库 WebUI 的「训练」页，五步全部在浏览器完成。
+> - **方式 B（命令行）**：本页下面 0~6 步的原始命令，与方式 A 完全等价，适合习惯终端或想精细调参的用户。
+
+## 方式 A · WebUI「训练」页（推荐，不依赖命令行）
+
+启动 WebUI 后点侧边栏「**训练**」，从上到下依次操作；每步有状态徽章（待办 → 进行中 → 已就绪 / 出错），底部日志区实时显示任务输出（每 2 秒自动刷新，训练期间可关页面稍后回来看）：
+
+1. **① 录音与切片**：上传录音（10~15 分钟，mp3/wav/m4a/flac 均可，自动放入 `custom_data/raw/`，多次上传会累加）→ 点「开始切片」。切片参数有折叠面板，默认即推荐值。
+2. **② Whisper 识别**：选模型（`large-v3` 最准，可换 `medium`/`small` 提速）→ 点「开始识别」。
+3. **③ 人工校对**：点「加载识别结果」→ 在表格里逐句改错字（可下拉试听任意切片）→ 点「保存校对」。广普错字多，这一步别省；赶时间可点「跳过校对直接用」。
+4. **④ 特征提取**：填实验名（音色名，如 `myvoice`，全程保持一致）→ 点「开始特征提取」（自动跑 1-get-text / 2-get-hubert / 2-get-sv / 3-get-semantic 四个子步，约 5~15 分钟）。若页面提示补丁未应用，先点「一键打广普补丁」。
+5. **⑤ 训练**：确认 s1/s2 轮数（默认 15/12）→ 点「开始训练」（自动生成配置 → s1 韵律 → s2 音色，需数小时）。完成后点「**扫描训练产物 → 填入设置**」，模型路径自动写进默认配置，回「合成」页即可试音。
+
+页面顶部有训练环境检查（根目录 / 补丁 / CUDA / faster-whisper / 切片数据），缺什么一目了然。
+
+> 方式 B 的全部命令细节见下方 0~6 步；WebUI 内部调用的就是同一批脚本与参数，两种方式产物完全一致、可混用（例如命令行做过切片，WebUI 直接从第 ② 步继续）。
+
+---
+
+## 方式 B · 命令行逐步执行
+
+> 目录约定：**仓库根目录** = 你运行 `python tools/webui.py` 的目录；
 > **GPT-SoVITS 目录** = `$env:GPT_SOVITS_ROOT`（Windows）/ `$GPT_SOVITS_ROOT`（Linux·macOS）指向的目录；
-> 默认「仓库与 GPT-SoVITS 平级」。
+> 默认扫描项目根目录下的一级子目录。
 
 ## 0. 环境要求
 
@@ -93,7 +115,7 @@ python scripts/run_whisper.py --input ../GPT-SoVITS/custom_data/sliced --output 
 python scripts/fix_transcript.py --input ../GPT-SoVITS/custom_data/asr/sliced_whisper.list --output ../GPT-SoVITS/custom_data/asr/sliced_corrected.list
 ```
 
-- **完成后你会看到**：每行文字与录音一致；WebUI「训练引导」页的「标注行数」会显示该文件行数
+- **完成后你会看到**：每行文字与录音一致；WebUI「训练」页顶部的「标注行数」会显示该文件行数
 
 ## 第 4 步 · 特征提取
 
@@ -127,7 +149,7 @@ set s2config_path=GPT_SoVITS\configs\s2v2Pro.json
 python -s GPT_SoVITS/prepare_datasets/3-get-semantic.py
 ```
 
-> ⚠️ **必须先打 `patches/guangpu_pinyin.patch` 再做 1-get-text**，粤字读音才会进音素标注。
+> ⚠️ **必须先打 `patches/pinyin.patch` 再做 1-get-text**，粤字读音才会进音素标注。
 
 ## 第 5 步 · 训练
 
@@ -182,7 +204,7 @@ python -s GPT_SoVITS/s2_train.py --config TEMP/tmp_s2.json
 # 用环境变量指定模型路径（Windows 用 $env:GPT_MODEL=... 形式，路径同样换成你的产物）
 GPT_MODEL=../GPT-SoVITS/GPT_weights_v2Pro/myvoice-e14.ckpt \
 SOVITS_MODEL=../GPT-SoVITS/SoVITS_weights_v2Pro/myvoice_e12_s396.pth \
-python tools/guangpu_local_tts.py 台词.txt out/
+python tools/local_tts.py 台词.txt out/
 ```
 
 - **不满意先调参数**：卡顿/噪点 → 确认 `SAMPLE_STEPS` ≥ 64、换更干净的参考音频；语气生硬 → 微调 `TEMPERATURE`（默认 0.95）；都试过仍不行，才补录音（10 分钟以上）重训

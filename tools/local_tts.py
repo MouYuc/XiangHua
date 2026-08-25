@@ -3,13 +3,13 @@
 广普本地配音工具（基于 GPT-SoVITS v2Pro）
 
 用法：
-    python guangpu_local_tts.py 台词.txt [输出目录]
+    python local_tts.py 台词.txt [输出目录]
 
 台词文件：UTF-8，一行一句（建议一句 5~20 字）。
 输出：每句一个 mp3，命名 001_台词前几字.mp3。
 
-路径配置：全部通过环境变量覆盖（默认按"仓库旁放 GPT-SoVITS"布局）：
-    GPT_SOVITS_ROOT    GPT-SoVITS 仓库根目录（默认 ../GPT-SoVITS）
+路径配置：全部通过环境变量覆盖（默认在本仓库下自动发现可用环境）：
+    GPT_SOVITS_ROOT    GPT-SoVITS 仓库根目录（默认扫描项目根目录）
     GPT_MODEL          GPT 模型路径
     SOVITS_MODEL       SoVITS 模型路径
     REF_AUDIO          参考音频路径
@@ -19,16 +19,20 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 
-GPT_SOVITS_ROOT = os.path.abspath(os.environ.get("GPT_SOVITS_ROOT", r"..\GPT-SoVITS"))
-sys.path.insert(0, GPT_SOVITS_ROOT)
-sys.path.insert(0, os.path.join(GPT_SOVITS_ROOT, "GPT_SoVITS"))
-os.chdir(GPT_SOVITS_ROOT)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from backend.services.core import SynthesisBackend
+from tools.env import resolve_default_environment_root
+from tools.rules import safe_name, to_lightmid
+
+GPT_SOVITS_ROOT = os.path.abspath(resolve_default_environment_root(Path(__file__).resolve().parents[1]))
 
 import soundfile as sf
 
-from GPT_SoVITS.inference_webui import change_gpt_weights, change_sovits_weights, get_tts_wav
-from guangpu_rules import to_lightmid, safe_name
 
 # ================= 配置区（可用环境变量覆盖） =================
 GPT_MODEL = os.environ.get("GPT_MODEL", os.path.join(GPT_SOVITS_ROOT, "GPT_weights_v2Pro", "guangpu07-e14.ckpt"))
@@ -51,27 +55,31 @@ AUTO_LIGHTMID = os.environ.get("AUTO_LIGHTMID", "1") == "1"
 
 
 def synth_line(text):
-    res = get_tts_wav(
-        ref_wav_path=REF_AUDIO,
-        prompt_text=REF_TEXT,
-        prompt_language="中文",
-        text=text,
-        text_language="中文",
-        how_to_cut="不切",
-        top_k=TOP_K,
-        top_p=TOP_P,
-        temperature=TEMPERATURE,
-        speed=SPEED,
-        pause_second=PAUSE_SECOND,
-        sample_steps=SAMPLE_STEPS,
-    )
-    last = list(res)[-1]
-    return last[1], last[0]
+    return _BACKEND.synth_one(_config(), text)
+
+
+def _config():
+    return {
+        "gpt_sovits_root": GPT_SOVITS_ROOT,
+        "gpt_model": GPT_MODEL,
+        "sovits_model": SOVITS_MODEL,
+        "ref_audio": REF_AUDIO,
+        "ref_text": REF_TEXT,
+        "top_k": TOP_K,
+        "top_p": TOP_P,
+        "temperature": TEMPERATURE,
+        "speed": SPEED,
+        "pause_second": PAUSE_SECOND,
+        "sample_steps": SAMPLE_STEPS,
+    }
+
+
+_BACKEND = SynthesisBackend()
 
 
 def main():
     if len(sys.argv) < 2:
-        print("用法: python guangpu_local_tts.py 台词.txt [输出目录]")
+        print("用法: python local_tts.py 台词.txt [输出目录]")
         return
     src = sys.argv[1]
     if not os.path.exists(src):
@@ -86,8 +94,7 @@ def main():
         print("台词文件为空")
         return
 
-    change_gpt_weights(gpt_path=GPT_MODEL)
-    change_sovits_weights(sovits_path=SOVITS_MODEL)
+    _BACKEND.ensure(_config())
 
     print(f"共 {len(lines)} 句，开始合成（每句约 10~30 秒）...")
     ok = 0

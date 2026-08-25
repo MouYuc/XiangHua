@@ -1,0 +1,428 @@
+"""FastAPI application for the Vue XiangHua WebUI."""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+import json
+
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+from backend.schemas import (
+    BatchRequest,
+    ConfigUpdate,
+    DoctorRequest,
+    EnvironmentSelectRequest,
+    FeatureRequest,
+    ModelRunRequest,
+    StopRequest,
+    SynthesisRequest,
+    TrainRequest,
+    TranscriptUpdate,
+)
+from backend.services import core
+from backend.services.doctor import run_doctor
+from backend.services.synthesis_jobs import SYNTHESIS_JOBS
+from tools.env import derive_environment_config, scan_gpt_sovits_roots
+from tools.train import (
+    ST_DONE,
+    apply_patch,
+    cmd_asr,
+    cmd_feat,
+    cmd_slice,
+    cmd_train,
+    find_models,
+    job_log_path,
+    last_job_id,
+    load_state as load_train_state,
+    mark_step,
+    missing_deps,
+    patch_status,
+    read_list,
+    running_jobs,
+    save_state as save_train_state,
+    start_deps_job,
+    start_job,
+    step_status,
+    stop_job,
+    tail_log,
+    train_env_rows,
+    write_corrected,
+)
+
+
+def _as_url(download_id: str) -> str:
+    return f"/api/files/{download_id}" if download_id else ""
+
+
+def _merge_config(update: ConfigUpdate) -> dict[str, Any]:
+    config = core.load_config()
+    config.update(update.model_dump(exclude_none=True, exclude={"text", "output_dir", "zip_output"}))
+    return config
+
+
+def _root_or_400(config: dict[str, Any]) -> Path:
+    root = Path(str(config.get("gpt_sovits_root") or "")).expanduser()
+    if not (root / "GPT_SoVITS").is_dir():
+        raise HTTPException(status_code=400, detail="GPT-SoVITS 根目录不可用，请先在设置页配置。")
+    return root
+
+
+def _job_message(step: str, message: str) -> dict[str, Any]:
+    return {"message": message, "step": step_status(step), "log": _current_log()}
+
+
+def _public_synthesis_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    data = dict(snapshot or {})
+    outputs: list[dict[str, Any]] = []
+    for item in data.get("outputs") or []:
+        row = dict(item)
+        row.pop("file", None)
+        row["url"] = _as_url(str(row.get("download_id") or ""))
+        outputs.append(row)
+    data["outputs"] = outputs
+    return data
+
+
+def _current_log(job_id: str | None = None) -> dict[str, str]:
+    job_id = job_id or last_job_id()
+    if not job_id:
+        return {"job_id": "", "text": "（还没有任务，日志将显示在这里）"}
+    status = step_status(job_id.split("_")[0])
+    log = status.get("log") or job_log_path(job_id)
+    return {"job_id": job_id, "text": tail_log(log, 80) or f"（任务 {job_id} 刚启动，日志暂为空）"}
+
+
+def _transcript_path(root: Path) -> Path:
+    return root / "custom_data" / "asr" / "sliced_whisper.list"
+
+
+def _valid_experiment(value: str) -> str:
+    name = (value or "myvoice").strip() or "myvoice"
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise HTTPException(status_code=400, detail="实验名只能包含字母、数字、下划线或连字符。")
+    return name
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="XiangHua API", version="1.0.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.on_event("startup")
+    def start_synthesis_warmup() -> None:
+        core.SYNTHESIS_BACKEND.start_warmup(core.load_config())
+
+    @app.get("/api/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/api/synthesis/readiness")
+    def synthesis_readiness() -> dict[str, str]:
+        return core.SYNTHESIS_BACKEND.warmup_status()
+
+    @app.post("/api/synthesis/readiness/retry")
+    def retry_synthesis_warmup() -> dict[str, str]:
+        return core.SYNTHESIS_BACKEND.start_warmup(core.load_config())
+
+    @app.get("/api/config")
+    def get_config() -> dict[str, Any]:
+        return core.load_config()
+
+    @app.put("/api/config")
+    def update_config(request: ConfigUpdate) -> dict[str, Any]:
+        return core.save_config(_merge_config(request))
+
+
+    @app.get("/api/overview")
+    def overview() -> dict[str, Any]:
+        config = core.load_config()
+        return {
+            "config": config,
+            "environment": core.environment_check(config),
+            "training": load_train_state(),
+            "training_stats": core.training_stats(config),
+            "history": core.load_history()[:5],
+        }
+
+    @app.get("/api/environment")
+    def environment() -> dict[str, Any]:
+        config = core.load_config()
+        return {"config": config, "rows": core.environment_check(config), "candidates": scan_gpt_sovits_roots(core.REPO_ROOT)}
+
+    @app.post("/api/environment/scan")
+    def scan_environment() -> dict[str, Any]:
+        config = core.load_config()
+        candidates = scan_gpt_sovits_roots(core.REPO_ROOT)
+        selected = str(config.get("gpt_sovits_root") or "")
+        if not any(os.path.normcase(item["path"]) == os.path.normcase(selected) for item in candidates) and candidates:
+            selected = candidates[0]["path"]
+            config.update(derive_environment_config(selected, config))
+            config = core.save_config(config)
+        return {"config": config, "rows": core.environment_check(config), "candidates": candidates, "selected": selected}
+
+    @app.post("/api/environment/select")
+    def select_environment(request: EnvironmentSelectRequest) -> dict[str, Any]:
+        config = core.load_config()
+        selected = Path(request.path).expanduser()
+        if not (selected / "GPT_SoVITS").is_dir():
+            raise HTTPException(status_code=400, detail="选择的 GPT-SoVITS 环境不存在或不完整。")
+        config.update(derive_environment_config(str(selected), config))
+        config = core.save_config(config)
+        return {"config": config, "rows": core.environment_check(config), "selected": str(selected)}
+
+    @app.post("/api/doctor")
+    def doctor(request: DoctorRequest) -> dict[str, Any]:
+        return run_doctor(repair=request.repair)
+
+    @app.post("/api/synthesis")
+    def synthesis(request: SynthesisRequest) -> dict[str, Any]:
+        readiness = core.SYNTHESIS_BACKEND.warmup_status()
+        if readiness["status"] in {"warming", "failed"}:
+            raise HTTPException(status_code=409, detail=readiness["message"])
+        config = _merge_config(request)
+        try:
+            return _public_synthesis_snapshot(SYNTHESIS_JOBS.start(config, request.text))
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/synthesis/status/{job_id}")
+    def synthesis_status(job_id: str) -> dict[str, Any]:
+        snapshot = SYNTHESIS_JOBS.snapshot(job_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="合成任务不存在。")
+        return _public_synthesis_snapshot(snapshot)
+
+    @app.get("/api/synthesis/events/{job_id}")
+    async def synthesis_events(job_id: str) -> StreamingResponse:
+        if SYNTHESIS_JOBS.snapshot(job_id) is None:
+            raise HTTPException(status_code=404, detail="合成任务不存在。")
+
+        async def stream():
+            async for snapshot in SYNTHESIS_JOBS.stream(job_id):
+                yield f"data: {json.dumps(_public_synthesis_snapshot(snapshot), ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    @app.post("/api/batch-synthesis")
+    def batch_synthesis(request: BatchRequest) -> dict[str, Any]:
+        readiness = core.SYNTHESIS_BACKEND.warmup_status()
+        if readiness["status"] in {"warming", "failed"}:
+            raise HTTPException(status_code=409, detail=readiness["message"])
+        config = _merge_config(request)
+        destination = Path(request.output_dir).expanduser() if request.output_dir else None
+        if destination and not destination.is_absolute():
+            raise HTTPException(status_code=400, detail="输出目录必须是绝对路径。")
+        try:
+            result = core.synthesize_lines(config, request.text, destination)
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        zip_path = ""
+        if request.zip_output and result["completed"]:
+            archive = core.OUTPUT_DIR / f"batch_{Path(result['output_dir']).name}"
+            zip_path = shutil.make_archive(str(archive), "zip", str(result["output_dir"]))
+        for item in result["outputs"]:
+            file_path = item.pop("file", "")
+            item["download_id"] = item.get("download_id") or (core.register_download(file_path) if file_path else "")
+            item["url"] = _as_url(item["download_id"])
+        result["zip_url"] = _as_url(core.register_download(zip_path)) if zip_path else ""
+        return result
+
+    @app.get("/api/history")
+    def history() -> list[dict[str, Any]]:
+        entries = core.load_history_with_downloads()
+        for entry in entries:
+            entry.pop("file", None)
+            entry["url"] = _as_url(str(entry.get("download_id") or ""))
+        return entries
+
+    @app.delete("/api/history", status_code=204)
+    def delete_history() -> Response:
+        core.clear_history()
+        return Response(status_code=204)
+
+    @app.get("/api/files")
+    def deprecated_file_query() -> None:
+        raise HTTPException(status_code=404, detail="请使用下载链接。")
+
+    @app.get("/api/files/{download_id}")
+    def serve_file(download_id: str) -> FileResponse:
+        candidate = core.resolve_download(download_id)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="下载文件不存在或已不可用。")
+        return FileResponse(candidate, filename=candidate.name)
+
+    @app.get("/api/training/status")
+    def training_status() -> dict[str, Any]:
+        config = core.load_config()
+        return {"state": load_train_state(), "environment": train_env_rows(config), "stats": core.training_stats(config), "running": running_jobs(), "log": _current_log()}
+
+    @app.post("/api/training/dependencies")
+    def install_dependencies() -> dict[str, Any]:
+        missing = missing_deps()
+        if not missing:
+            return {"message": "训练依赖已齐全，无需安装。", "job_id": "", "log": _current_log()}
+        job_id = start_deps_job(missing)
+        return {"message": "正在后台安装：" + ", ".join(missing), "job_id": job_id, "log": _current_log(job_id)}
+
+    @app.post("/api/training/patch")
+    def training_patch() -> dict[str, Any]:
+        config = core.load_config()
+        root = _root_or_400(config)
+        ok, message = apply_patch(str(root))
+        if not ok:
+            raise HTTPException(status_code=400, detail=message)
+        return {"message": message, "environment": train_env_rows(config)}
+
+    @app.post("/api/training/slice")
+    async def training_slice(
+        recording: UploadFile = File(...),
+        silence_threshold: float = Form(-35),
+        min_length: int = Form(4000),
+        min_gap: int = Form(300),
+        keep_silence: int = Form(500),
+    ) -> dict[str, Any]:
+        config = core.load_config()
+        root = _root_or_400(config)
+        if min_length < min_gap or min_gap < 10 or keep_silence < 10:
+            raise HTTPException(status_code=400, detail="参数不满足约束：最短段长 >= 最短间隔 >= 10，保留静音 >= 10。")
+        filename = Path(recording.filename or "recording.wav").name
+        raw = root / "custom_data" / "raw"
+        raw.mkdir(parents=True, exist_ok=True)
+        destination = raw / filename
+        with destination.open("wb") as output:
+            shutil.copyfileobj(recording.file, output)
+        job_id = start_job("slice", "录音切片", cmd_slice(str(root), silence_threshold, min_length, min_gap, keep_silence))
+        return {"job_id": job_id, **_job_message("slice", f"切片任务已启动。录音已放入 {destination}。")}
+
+    @app.post("/api/training/asr")
+    def training_asr(request: ModelRunRequest) -> dict[str, Any]:
+        config = core.load_config()
+        root = _root_or_400(config)
+        if not any((root / "custom_data" / "sliced").glob("*.wav")):
+            raise HTTPException(status_code=400, detail="还没有切片数据，请先完成录音切片。")
+        job_id = start_job("asr", "Whisper 识别", cmd_asr(str(root), model=request.model))
+        return {"job_id": job_id, **_job_message("asr", f"识别任务已启动（模型 {request.model}）。")}
+
+    @app.get("/api/training/transcript")
+    def get_transcript() -> dict[str, Any]:
+        root = _root_or_400(core.load_config())
+        source = _transcript_path(root)
+        if not source.exists():
+            raise HTTPException(status_code=404, detail="还没有识别结果，请先完成 Whisper 识别。")
+        rows = read_list(source)
+        sliced_root = (root / "custom_data" / "sliced").resolve()
+        for row in rows:
+            try:
+                audio_path = Path(str(row.get("path") or "")).resolve(strict=True)
+                audio_path.relative_to(sliced_root)
+                row["audio_url"] = _as_url(core.register_download(audio_path))
+            except (OSError, ValueError):
+                row["audio_url"] = ""
+        return {"rows": rows}
+
+    @app.put("/api/training/transcript")
+    def save_transcript(request: TranscriptUpdate) -> dict[str, Any]:
+        root = _root_or_400(core.load_config())
+        output = root / "custom_data" / "asr" / "sliced_corrected.list"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        count = write_corrected(output, request.rows)
+        mark_step("correct", ST_DONE, note=f"已保存 {count} 句")
+        return _job_message("correct", f"已保存 {count} 句到 sliced_corrected.list，可以进入特征提取。")
+
+    @app.post("/api/training/transcript/skip")
+    def skip_transcript() -> dict[str, Any]:
+        root = _root_or_400(core.load_config())
+        source = _transcript_path(root)
+        if not source.exists():
+            raise HTTPException(status_code=404, detail="还没有识别结果，请先完成 Whisper 识别。")
+        destination = root / "custom_data" / "asr" / "sliced_corrected.list"
+        shutil.copy2(source, destination)
+        mark_step("correct", ST_DONE, note="直接使用识别结果")
+        return _job_message("correct", "已直接使用识别结果。广普错字较多，建议仍抽时间校对。")
+
+    @app.post("/api/training/features")
+    def training_features(request: FeatureRequest) -> dict[str, Any]:
+        config = core.load_config()
+        root = _root_or_400(config)
+        experiment = _valid_experiment(request.experiment)
+        if not (root / "custom_data" / "asr" / "sliced_corrected.list").exists():
+            raise HTTPException(status_code=400, detail="请先完成校对或直接使用识别结果。")
+        if not patch_status(str(root)):
+            raise HTTPException(status_code=400, detail="广普补丁未应用，请先应用补丁。")
+        job_id = start_job("feat", "特征提取", cmd_feat(str(root), experiment))
+        return {"job_id": job_id, **_job_message("feat", "特征提取已启动（4 个子步）。")}
+
+    @app.post("/api/training/run")
+    def training_run(request: TrainRequest) -> dict[str, Any]:
+        config = core.load_config()
+        root = _root_or_400(config)
+        experiment = _valid_experiment(request.experiment)
+        if not (root / "custom_data" / "dataset" / "2-name2text-0.txt").exists():
+            raise HTTPException(status_code=400, detail="特征提取未完成，请先完成特征提取。")
+        state = load_train_state()
+        state.update(exp=experiment, s1_epochs=request.s1_epochs, s2_epochs=request.s2_epochs)
+        save_train_state(state)
+        commands, pre = cmd_train(str(root), experiment, request.s1_epochs, request.s2_epochs)
+        job_id = start_job("train", "模型训练", commands, pre=pre, progress_meta={"s1_epochs": request.s1_epochs, "s2_epochs": request.s2_epochs, "gpu": os.environ.get("CUDA_VISIBLE_DEVICES", "0") or "0"})
+        return {"job_id": job_id, **_job_message("train", "训练已启动：生成配置 -> s1 -> s2。")}
+
+    @app.post("/api/training/stop")
+    def training_stop(request: StopRequest) -> dict[str, Any]:
+        job_id = request.job_id or last_job_id()
+        if not job_id or not stop_job(job_id):
+            raise HTTPException(status_code=400, detail="没有可停止的运行中任务。")
+        return {"message": f"已请求停止任务 {job_id}", "log": _current_log(job_id)}
+
+    @app.get("/api/training/log")
+    def training_log(job_id: str | None = None, lines: int = Query(default=80, ge=1, le=500)) -> dict[str, str]:
+        current = _current_log(job_id)
+        if job_id and current["job_id"]:
+            status = step_status(job_id.split("_")[0])
+            path = status.get("log") or job_log_path(job_id)
+            current["text"] = tail_log(path, lines) or current["text"]
+        return current
+
+    @app.post("/api/training/models/select")
+    def select_models() -> dict[str, Any]:
+        config = core.load_config()
+        root = _root_or_400(config)
+        models = find_models(str(root))
+        if not models["gpt"] or not models["sovits"]:
+            raise HTTPException(status_code=404, detail="还没找到训练产物，请先完成训练。")
+        config.update(gpt_model=models["gpt"], sovits_model=models["sovits"])
+        return {"message": "已填入并保存最新训练模型，可回合成页试音。", "config": core.save_config(config)}
+
+    frontend_dist = Path(os.environ.get("XIANGHUA_FRONTEND_DIST", core.REPO_ROOT / "frontend" / "dist"))
+    if frontend_dist.is_dir():
+        assets = frontend_dist / "assets"
+        if assets.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets), name="frontend-assets")
+
+        @app.get("/{frontend_path:path}", include_in_schema=False)
+        def frontend(frontend_path: str) -> FileResponse:
+            candidate = frontend_dist / frontend_path
+            if frontend_path and candidate.is_file():
+                return FileResponse(candidate)
+            return FileResponse(frontend_dist / "index.html")
+
+    return app
+
+
+app = create_app()

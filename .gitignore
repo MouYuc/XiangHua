@@ -8,6 +8,13 @@ output/
 logs_*/
 .superpowers/
 .guangpu_webui/
+GPT-SoVITS/
+.venv/
 AGENTS.md
 docs/superpowers/
 README_preview.html
+/.playwright-cli
+/tests
+
+# Added by code-review-graph
+.code-review-graph/

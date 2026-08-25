@@ -8,7 +8,7 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE="${1:-ModelScope}"
-GPT_ROOT="${GPT_SOVITS_ROOT:-$REPO_ROOT/../GPT-SoVITS}"
+GPT_ROOT="${GPT_SOVITS_ROOT:-$REPO_ROOT/GPT-SoVITS}"
 
 echo "=== GuangPu-TTS 一键环境安装 (Linux/macOS) ==="
 echo "GPT-SoVITS 位置: $GPT_ROOT"
@@ -48,8 +48,8 @@ echo "[4/6] 安装 GPT-SoVITS 依赖 ..."
 # 5. 广普补丁
 echo "[5/6] 应用广普发音补丁 ..."
 cd "$GPT_ROOT"
-if git apply --check "$REPO_ROOT/patches/guangpu_pinyin.patch" 2>/dev/null; then
-  git apply "$REPO_ROOT/patches/guangpu_pinyin.patch"
+if git apply --check "$REPO_ROOT/patches/pinyin.patch" 2>/dev/null; then
+  git apply "$REPO_ROOT/patches/pinyin.patch"
 else
   echo "补丁可能已应用，跳过（见 patches/README.md）"
 fi
@@ -75,5 +75,5 @@ fi
 echo ""
 echo "=== 安装完成 ==="
 echo "训练：见 docs/TRAINING_GUIDE.md"
-echo "合成：GPT_SOVITS_ROOT=$GPT_ROOT python tools/guangpu_local_tts.py 台词.txt 输出目录"
-echo "WebUI：GPT_SOVITS_ROOT=$GPT_ROOT python tools/guangpu_webui.py（浏览器打开 http://127.0.0.1:7860）"
+echo "合成：GPT_SOVITS_ROOT=$GPT_ROOT python tools/local_tts.py 台词.txt 输出目录"
+echo "WebUI：GPT_SOVITS_ROOT=$GPT_ROOT python tools/webui.py（浏览器打开 http://127.0.0.1:7860）"

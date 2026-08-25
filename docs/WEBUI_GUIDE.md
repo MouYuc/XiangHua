@@ -1,25 +1,40 @@
 # WebUI 使用说明
 
 本地图形界面，打开浏览器即可完成：写台词 → 合成 → 试听 → 下载。
-页面：**合成 / 批量合成 / 环境检测 / 训练引导 / 历史记录 / 设置**。
+页面：**合成 / 批量合成 / 环境检测 / 训练 / 历史记录 / 设置**。
 
 ## 启动
 
 ```powershell
 # Windows
 $env:GPT_SOVITS_ROOT = 'D:\AIVoice\GPT-SoVITS'   # 换成你的 GPT-SoVITS 路径
-python tools\guangpu_webui.py
+python tools\webui.py
 ```
 
 ```bash
 # Linux / macOS
 export GPT_SOVITS_ROOT=/path/to/GPT-SoVITS
-python tools/guangpu_webui.py
+python tools/webui.py
 ```
 
 浏览器打开 <http://127.0.0.1:7860>。
 
-> 如果 `GPT_SOVITS_ROOT` 不设置，默认按"本仓库与 GPT-SoVITS 平级"查找。
+### Docker
+
+在项目根目录准备 `models/pretrained_models`、`models/G2PWModel`、`my_voice/custom_data`、
+`my_voice/GPT_weights_v2Pro`、`my_voice/SoVITS_weights_v2Pro`、
+`.guangpu_webui` 和 `output` 后执行：
+
+```bash
+docker compose up -d
+```
+
+容器 WebUI 监听 `0.0.0.0:7860`，主机通过 <http://127.0.0.1:7860> 访问。
+容器项目根目录固定为 `/workspace`，环境检测扫描其直接子目录；默认的
+`/workspace/GPT-SoVITS` 会自动被识别。额外挂载的环境也必须直接位于
+`/workspace/<环境名>`，并包含 `GPT_SoVITS` 子目录。
+
+> 如果 `GPT_SOVITS_ROOT` 不设置，默认扫描项目根目录下的一级子目录，选择包含 `GPT_SoVITS` 的环境。
 > 也可以在 WebUI 的「设置」页填写路径并保存，写入 `.guangpu_webui/config.json`（不会入库）。
 
 ## 页面说明
@@ -27,7 +42,13 @@ python tools/guangpu_webui.py
 - **合成**：多行台词（一行一句）+ 自动转轻中广普开关 + 六个参数滑块（默认 H4 定稿配方）+ 模型/参考音频（可改）+ 逐句输出（试听 + 下载）。
 - **批量合成**：上传 `.txt` 台词文件，整批合成，完成后打包 zip 下载。
 - **环境检测**：检查 Python / PyTorch+CUDA / 依赖包 / ffmpeg / GPT-SoVITS 根目录 / 广普补丁 / 模型 / 参考音频，缺什么直接给修复命令。
-- **训练引导**：五步流程（录音 → 切片+识别 → 人工校对 → 特征提取 → 训练）+ 训练数据统计。
+- **训练**：从录音到专属音色的完整流程，全部在浏览器完成、无需命令行：
+  1. **录音切片**：上传录音（10~15 分钟），自动切成一句一句
+  2. **Whisper 识别**：自动给每句切片打文字
+  3. **人工校对**：表格逐句核对/修改识别文本（广普错字多，关键一步），可试听任意切片
+  4. **特征提取**：一键跑 4 个子步（BERT / HuBERT / 声纹 / 语义）
+  5. **训练**：自动生成配置 → s1（韵律）→ s2（音色），支持后台运行、实时日志、随时停止；完成后「扫描训练产物 → 填入设置」即可回「合成」页用新音色。
+  页面顶部另有训练环境检查与「一键打广普补丁」。
 - **历史记录**：最近 200 条合成记录，可回听、下载、清空。
 - **设置**：GPT-SoVITS 根目录与模型/参考音频路径，保存为本机默认。
 
@@ -44,7 +65,7 @@ python tools/guangpu_webui.py
 | `REF_AUDIO` / `REF_TEXT` | 参考音频与文本 |
 | `TOP_K` / `TOP_P` / `TEMPERATURE` / `SAMPLE_STEPS` / `SPEED` / `PAUSE_SECOND` | 合成参数 |
 | `AUTO_LIGHTMID` | `0` 关闭自动转广普 |
-| `GRADIO_SERVER_NAME` / `GRADIO_SERVER_PORT` | 监听地址 / 端口（默认 127.0.0.1:7860） |
+| `GRADIO_SERVER_NAME` / `GRADIO_SERVER_PORT` | 监听地址 / 端口（本机默认 127.0.0.1:7860，Docker Compose 默认 0.0.0.0:7860） |
 
 ## 常见问题
 
@@ -58,7 +79,7 @@ python tools/guangpu_webui.py
 合成会降级输出 wav；环境检测页会给出安装命令（Windows：`winget install Gyan.FFmpeg`）。
 
 **粤字还是按普通话念？**
-说明广普补丁未应用：在 GPT-SoVITS 里执行 `git apply patches/guangpu_pinyin.patch`，并重新跑训练的特征提取；已训练模型不受影响。
+说明广普补丁未应用：在 GPT-SoVITS 里执行 `git apply patches/pinyin.patch`，并重新跑训练的特征提取；已训练模型不受影响。
 
 **端口被占用？**
 设置 `GRADIO_SERVER_PORT=7861` 后重启。

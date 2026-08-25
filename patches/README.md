@@ -1,6 +1,6 @@
 # 广普发音词典补丁
 
-`guangpu_pinyin.patch` 修改 GPT-SoVITS 的两个中文文本前端文件：
+`pinyin.patch` 修改 GPT-SoVITS 的两个中文文本前端文件：
 
 - `GPT_SoVITS/text/chinese.py`
 - `GPT_SoVITS/text/chinese2.py`
@@ -20,7 +20,7 @@
 
 ```bash
 cd GPT-SoVITS
-git apply ../guangpu-tts/patches/guangpu_pinyin.patch
+git apply ../XiangHua/patches/pinyin.patch
 ```
 
 如果 `git apply` 报错（文件已被修改），可以手动按补丁内容编辑两个文件，

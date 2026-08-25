@@ -1,0 +1,1 @@
+"""XiangHua FastAPI backend package."""

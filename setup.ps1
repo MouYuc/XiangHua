@@ -20,7 +20,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = $PSScriptRoot
 
 if (-not $GPT_SOVITS_ROOT) {
-    $GPT_SOVITS_ROOT = Join-Path $RepoRoot "..\GPT-SoVITS"
+    $GPT_SOVITS_ROOT = Join-Path $RepoRoot "GPT-SoVITS"
 }
 $GPT_SOVITS_ROOT = [System.IO.Path]::GetFullPath($GPT_SOVITS_ROOT)
 $VENV = Join-Path $GPT_SOVITS_ROOT ".venv"
@@ -71,9 +71,9 @@ Write-Host "[4/6] 安装 GPT-SoVITS 依赖 ..." -ForegroundColor Cyan
 # ---------- 5. 打广普补丁 ----------
 Write-Host "[5/6] 应用广普发音补丁 ..." -ForegroundColor Cyan
 Push-Location $GPT_SOVITS_ROOT
-git apply --check (Join-Path $RepoRoot "patches\guangpu_pinyin.patch") 2>$null
+git apply --check (Join-Path $RepoRoot "patches\pinyin.patch") 2>$null
 if ($LASTEXITCODE -eq 0) {
-    git apply (Join-Path $RepoRoot "patches\guangpu_pinyin.patch")
+    git apply (Join-Path $RepoRoot "patches\pinyin.patch")
 } else {
     Write-Host "git apply 失败（可能已打过补丁），手动检查 patches/README.md" -ForegroundColor Yellow
 }
@@ -105,5 +105,5 @@ Pop-Location
 Write-Host ""
 Write-Host "=== 安装完成 ===" -ForegroundColor Green
 Write-Host "下一步：按 docs/TRAINING_GUIDE.md 录 5~15 分钟素材并训练你的广普音色"
-Write-Host "合成：GPT_SOVITS_ROOT=$GPT_SOVITS_ROOT 后运行 tools\guangpu_local_tts.py 台词.txt 输出目录"
-Write-Host "WebUI：GPT_SOVITS_ROOT=$GPT_SOVITS_ROOT 后运行 python tools\guangpu_webui.py（浏览器打开 http://127.0.0.1:7860）"
+Write-Host "合成：GPT_SOVITS_ROOT=$GPT_SOVITS_ROOT 后运行 tools\local_tts.py 台词.txt 输出目录"
+Write-Host "WebUI：GPT_SOVITS_ROOT=$GPT_SOVITS_ROOT 后运行 python tools\webui.py（浏览器打开 http://127.0.0.1:7860）"
