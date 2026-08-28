@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+SynthesisLanguage = Literal["zh", "yue", "en", "ja", "ko"]
 
 
 class ConfigUpdate(BaseModel):
@@ -13,6 +15,8 @@ class ConfigUpdate(BaseModel):
     sovits_model: str | None = None
     ref_audio: str | None = None
     ref_text: str | None = None
+    text_lang: SynthesisLanguage | None = None
+    prompt_lang: SynthesisLanguage | None = None
     top_k: int | None = Field(default=None, ge=1)
     top_p: float | None = Field(default=None, gt=0, le=1)
     temperature: float | None = Field(default=None, gt=0, le=2)
@@ -21,16 +25,23 @@ class ConfigUpdate(BaseModel):
     pause_second: float | None = Field(default=None, ge=0, le=10)
     auto_lightmid: bool | None = None
     theme: str | None = None
+    orb_synthesis_token_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    orb_settled_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    orb_playback_token_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+
+    @field_validator(
+        "orb_synthesis_token_color",
+        "orb_settled_color",
+        "orb_playback_token_color",
+        mode="before",
+    )
+    @classmethod
+    def normalize_orb_color(cls, value: str | None) -> str | None:
+        return str(value).upper() if value is not None else None
 
 
 class SynthesisRequest(ConfigUpdate):
     text: str
-
-
-class BatchRequest(ConfigUpdate):
-    text: str
-    output_dir: str | None = None
-    zip_output: bool = False
 
 
 class EnvironmentSelectRequest(BaseModel):

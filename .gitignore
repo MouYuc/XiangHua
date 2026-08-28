@@ -18,3 +18,6 @@ README_preview.html
 
 # Added by code-review-graph
 .code-review-graph/
+backend/tests/test_gpt_sovits_orb_patch.py
+backend/tests/test_synthesis_languages.py
+backend/tests/test_synthesis_orb_events.py

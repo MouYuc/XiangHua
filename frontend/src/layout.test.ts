@@ -6,8 +6,12 @@ import { dirname, resolve } from 'node:path'
 // @ts-expect-error Vitest runs this test in Node, while the app typecheck does not bundle Node types.
 import { fileURLToPath } from 'node:url'
 import appSource from './App.vue?raw'
+import streamSource from './synthesisStream.ts?raw'
 
 const stylesSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'styles.css'), 'utf8')
+const dockerSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'Dockerfile'), 'utf8')
+const setupPowershellSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'setup.ps1'), 'utf8')
+const setupShellSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'setup.sh'), 'utf8')
 
 describe('workspace density layout contracts', () => {
   it('exposes the synthesis history drawer workflow', () => {
@@ -66,7 +70,7 @@ describe('workspace density layout contracts', () => {
 
   it('wires synthesis jobs to polling and SSE progress updates', () => {
     expect(appSource).toContain('/api/synthesis/status/')
-    expect(appSource).toContain('/api/synthesis/events/')
+    expect(streamSource).toContain('/api/synthesis/events/')
     expect(appSource).toContain('EventSource')
     expect(appSource).toContain('synthesisJob')
     expect(appSource).toContain('synthesisProgress')
@@ -79,11 +83,49 @@ describe('workspace density layout contracts', () => {
     expect(appSource).toContain('synthesisReady')
   })
 
-  it('passes synthesis progress into the audio orb display', () => {
-    expect(appSource).toContain(':status="synthesisJob?.status"')
-    expect(appSource).toContain(':completed="synthesisJob?.completed || 0"')
+  it('passes typed synthesis and playback state into the V11 audio orb', () => {
     expect(appSource).toContain(':total="synthesisJob?.total || 0"')
-    expect(appSource).toContain(':progress="synthesisJob?.progress"')
+    expect(appSource).toContain(':completed-output-indexes="completedOrbOutputs"')
+    expect(appSource).toContain(':semantic-token="orbSemanticToken"')
+    expect(appSource).toContain(':playback="orbPlayback"')
+    expect(appSource).toContain(':colors="orbColors"')
+    expect(appSource).not.toContain(':progress="synthesisJob?.progress"')
+  })
+
+  it('reduces typed synthesis stream events separately from status snapshots', () => {
+    expect(appSource).toContain('applySynthesisStreamEvent')
+    expect(appSource).toContain("event.type === 'semantic_token'")
+    expect(appSource).toContain("event.type === 'output_completed'")
+    expect(appSource).toContain("event.type === 'snapshot'")
+  })
+
+  it('guards synthesis state against stale revisions and reconnects the stream', () => {
+    expect(appSource).toContain("from './synthesisStream'")
+    expect(appSource).toContain('shouldApplySynthesisRevision')
+    expect(appSource).toContain('latestSynthesisRevision')
+    expect(streamSource).toContain('value > latestRevision')
+    expect(appSource).toContain('createSynthesisStream({')
+  })
+
+  it('uses individual audio playback time instead of a global playing boolean', () => {
+    expect(appSource).toContain('@timeupdate="updateOrbPlayback(index, $event)"')
+    expect(appSource).toContain('@play="startOrbPlayback(index, $event)"')
+    expect(appSource).not.toContain('orbPlaying')
+  })
+
+  it('exposes V11 synthesis, settled, and playback color inputs', () => {
+    expect(appSource).toContain('orb_synthesis_token_color')
+    expect(appSource).toContain('orb_settled_color')
+    expect(appSource).toContain('orb_playback_token_color')
+    expect(appSource).toContain('class="orb-color-controls"')
+  })
+
+  it('loads and auto-persists V11 orb colors independently from synthesis', () => {
+    expect(appSource).toContain("api.get<Config>('/api/config')")
+    expect(appSource).toContain('await refreshConfig()')
+    expect(appSource).toContain('function scheduleOrbColorPersistence')
+    expect(appSource).toContain("api.put<Config>('/api/config', orbColorConfig())")
+    expect(appSource).toContain('if (!orbColorHydrating) scheduleOrbColorPersistence()')
   })
 
   it('keeps the output column stable and contains debug logs inside output', () => {
@@ -103,10 +145,10 @@ describe('workspace density layout contracts', () => {
   it('keeps model settings in the left column below lyrics', () => {
     const synthesisStart = appSource.indexOf('class="synthesis-grid"')
     const modelIndex = appSource.indexOf('<section class="panel model-panel">')
-    const batchPageIndex = appSource.indexOf('<template v-else-if="page === \'batch\'">')
+    const trainingPageIndex = appSource.indexOf('<template v-else-if="page === \'training\'">')
     expect(synthesisStart).toBeGreaterThan(-1)
     expect(modelIndex).toBeGreaterThan(synthesisStart)
-    expect(appSource.lastIndexOf('</div>', batchPageIndex)).toBeGreaterThan(modelIndex)
+    expect(appSource.lastIndexOf('</div>', trainingPageIndex)).toBeGreaterThan(modelIndex)
     expect(appSource).not.toContain('</section></section></div><section class="panel voice-panel">')
   })
 
@@ -117,6 +159,32 @@ describe('workspace density layout contracts', () => {
     expect(appSource).not.toContain('class="synth-mode-switch"')
   })
 
+  it('runs integrated batch synthesis through the background SSE job', () => {
+    expect(appSource).toContain('async function startSynthesis(text: string)')
+    expect(appSource).toContain("api.post<SynthesisSnapshot>('/api/synthesis', { ...config, text })")
+    expect(appSource).toContain('async function synthesizeBatch() { await startSynthesis(synthesisText.value) }')
+    expect(appSource).toContain('synthesisText.value = await file.text()')
+    expect(appSource).toContain('!synthesisText.trim()')
+    expect(appSource).toContain("async function synthesize() { await startSynthesis(synthesisText.value) }")
+    expect(appSource).not.toContain('batchText')
+    expect(appSource).not.toContain('/api/batch-synthesis')
+    expect(appSource).not.toContain("page === 'batch'")
+    expect(appSource).not.toContain('batchOutputDir')
+    expect(appSource).not.toContain('batchZip')
+    expect(appSource).not.toContain('batchResult')
+    expect(appSource).not.toContain('loadBatchFile')
+  })
+
+  it('keeps pronunciation patches user-imported and injects orb callbacks in Docker', () => {
+    expect(dockerSource).not.toContain('pinyin.patch')
+    expect(dockerSource).not.toContain('COPY patches')
+    expect(dockerSource).toContain('gpt_sovits_orb_patch.py')
+    expect(setupPowershellSource).not.toContain('pinyin.patch')
+    expect(setupShellSource).not.toContain('pinyin.patch')
+    expect(appSource).toContain('/api/engine/pronunciation-patch')
+    expect(appSource).toContain('importPronunciationPatch')
+  })
+
   it('keeps the model and reference audio controls on the synthesis page', () => {
     expect(appSource).toContain('class="panel model-panel"')
     expect(appSource).toContain('GPT 模型')
@@ -124,5 +192,25 @@ describe('workspace density layout contracts', () => {
     expect(appSource).toContain('参考音频')
     expect(appSource).toContain('参考文本')
     expect(appSource).not.toContain('class="panel voice-panel"')
+  })
+
+  it('offers independent text and prompt language controls with reference audio upload', () => {
+    expect(appSource).toContain('text_lang')
+    expect(appSource).toContain('prompt_lang')
+    expect(appSource).toContain('v-model="config.text_lang"')
+    expect(appSource).toContain('v-model="config.prompt_lang"')
+    expect(appSource).toContain("'/api/reference-audio'")
+    expect(appSource).toContain('uploadReferenceAudio')
+  })
+
+  it('keeps reference audio upload in the same row as the reference path', () => {
+    const modelPanel = appSource.slice(
+      appSource.indexOf('<section class="panel model-panel">'),
+      appSource.indexOf('</section></div></template>', appSource.indexOf('<section class="panel model-panel">')),
+    )
+    expect(modelPanel).toContain('class="reference-audio-control"')
+    expect(modelPanel).toContain('class="reference-audio-row"')
+    expect(modelPanel).toContain('class="reference-audio-upload"')
+    expect(modelPanel).not.toContain('{{ referenceAudioUploading ? \'参考音频上传中…\' : \'上传参考音频\' }}')
   })
 })

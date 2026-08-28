@@ -38,6 +38,7 @@ class _Subscriber:
 class _SynthesisJob:
     job_id: str
     snapshot: dict[str, Any]
+    revision: int = 0
     lock: threading.RLock = field(default_factory=threading.RLock)
     subscribers: list[_Subscriber] = field(default_factory=list)
     done: threading.Event = field(default_factory=threading.Event)
@@ -78,9 +79,12 @@ class SynthesisJobManager:
         def _progress(payload: dict[str, Any]) -> None:
             self.update(job_id, payload)
 
+        def _event(payload: dict[str, Any]) -> None:
+            self.publish(job_id, payload)
+
         def _run() -> None:
             try:
-                result = core.synthesize_lines(cfg, text, output_dir, progress_cb=_progress)
+                result = core.synthesize_lines(cfg, text, output_dir, progress_cb=_progress, event_cb=_event)
             except Exception as exc:
                 self.update(
                     job_id,
@@ -128,19 +132,39 @@ class SynthesisJobManager:
         if not job:
             return None
         with job.lock:
+            job.revision += 1
             job.snapshot.update(payload)
             job.snapshot["job_id"] = job_id
+            job.snapshot["revision"] = job.revision
             job.snapshot["updated_at"] = _now()
             snapshot = _snapshot(job.snapshot)
             if snapshot.get("status") in TERMINAL_STATUSES:
                 job.done.set()
             subscribers = list(job.subscribers)
+        self._publish_to_subscribers(subscribers, {"type": "snapshot", "snapshot": snapshot, "revision": job.revision})
+        return snapshot
+
+    def publish(self, job_id: str, event: dict[str, Any]) -> dict[str, Any] | None:
+        job = self._jobs.get(job_id)
+        if not job:
+            return None
+        payload = dict(event)
+        if not isinstance(payload.get("type"), str):
+            raise ValueError("合成事件缺少 type。")
+        with job.lock:
+            job.revision += 1
+            payload["revision"] = job.revision
+            subscribers = list(job.subscribers)
+        self._publish_to_subscribers(subscribers, payload)
+        return payload
+
+    @staticmethod
+    def _publish_to_subscribers(subscribers: list[_Subscriber], payload: dict[str, Any]) -> None:
         for subscriber in subscribers:
             try:
-                subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, snapshot)
+                subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, dict(payload))
             except RuntimeError:
                 continue
-        return snapshot
 
     def subscribe(self, job_id: str) -> tuple[dict[str, Any] | None, asyncio.Queue[dict[str, Any]]]:
         job = self._jobs.get(job_id)
@@ -166,13 +190,13 @@ class SynthesisJobManager:
         if snapshot is None:
             raise KeyError(job_id)
         try:
-            yield snapshot
+            yield {"type": "snapshot", "snapshot": snapshot}
             if snapshot.get("status") in TERMINAL_STATUSES:
                 return
             while True:
                 item = await queue.get()
                 yield item
-                if item.get("status") in TERMINAL_STATUSES:
+                if item.get("type") == "snapshot" and item.get("snapshot", {}).get("status") in TERMINAL_STATUSES:
                     return
         finally:
             self.unsubscribe(job_id, queue)

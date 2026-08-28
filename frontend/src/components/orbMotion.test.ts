@@ -1,50 +1,30 @@
 import { describe, expect, it } from 'vitest'
-import { resolveOrbAssemblyProgress, resolveOrbChargeProgress, resolveOrbPhase, resolveOrbFillFront, resolveOrbPresentationPhase } from './orbMotion'
+import { particleGroup, resolveOrbColors, resolvePlaybackToken } from './orbMotion'
 
-describe('orb motion state machine', () => {
-  it('starts in explode mode when synthesis begins', () => {
-    expect(resolveOrbPhase({ active: true, status: 'running', completed: 0, total: 6 })).toBe('explode')
+describe('V11 orb motion helpers', () => {
+  it('interleaves output ownership across the same sphere', () => {
+    expect([0, 1, 2, 3, 4, 5].map((index) => particleGroup(index, 3))).toEqual([0, 1, 2, 0, 1, 2])
   })
 
-  it('switches to fill mode after the first sentence completes', () => {
-    expect(resolveOrbPhase({ active: true, status: 'running', completed: 2, total: 6 })).toBe('fill')
+  it('maps playback time through the semantic token rate before duration fallback', () => {
+    expect(resolvePlaybackToken({ currentTime: 1, duration: 9, tokenCount: 50, frameRate: 25, speed: 1 })).toBe(25)
+    expect(resolvePlaybackToken({ currentTime: 4.5, duration: 9, tokenCount: 50, frameRate: 0, speed: 1 })).toBe(25)
   })
 
-  it('enters fill mode while the current sentence is generating', () => {
-    expect(resolveOrbPhase({ active: true, status: 'running', phase: 'generating', completed: 0, total: 1 })).toBe('fill')
+  it('clamps playback tokens to the known semantic token range', () => {
+    expect(resolvePlaybackToken({ currentTime: 30, duration: 9, tokenCount: 50, frameRate: 25, speed: 1 })).toBe(49)
+    expect(resolvePlaybackToken({ currentTime: 0, duration: 9, tokenCount: 0, frameRate: 25, speed: 1 })).toBe(0)
   })
 
-  it('does not invent progress while the backend has not reported any', () => {
-    expect(resolveOrbChargeProgress({ active: true, status: 'running', phase: 'generating', completed: 0, total: 1 })).toBe(0)
-    expect(resolveOrbChargeProgress({ active: true, status: 'running', phase: 'generating', completed: 0, total: 1, progress: .43 })).toBe(.43)
+  it('uses V11 white as the default playback token color', () => {
+    expect(resolveOrbColors({}).playbackToken).toBe('#F8FBFF')
   })
 
-  it('uses backend progress when the synthesis stream provides it', () => {
-    expect(resolveOrbChargeProgress({ active: true, status: 'running', phase: 'generating', completed: 0, total: 1, progress: .43 })).toBe(.43)
-  })
-
-  it('keeps the charging presentation visible until the final charge reaches the sphere', () => {
-    expect(resolveOrbPresentationPhase('done', 0.72)).toBe('fill')
-    expect(resolveOrbPresentationPhase('done', 1)).toBe('done')
-  })
-
-  it('lets the fill phase begin immediately when the stream advances', () => {
-    expect(resolveOrbPresentationPhase('fill', 0)).toBe('fill')
-  })
-
-  it('morphs scattered particles according to live charge progress', () => {
-    expect(resolveOrbAssemblyProgress(0)).toBe(0)
-    expect(resolveOrbAssemblyProgress(.5)).toBe(.5)
-    expect(resolveOrbAssemblyProgress(1)).toBe(1)
-  })
-
-
-  it('switches to a finished blue sphere when synthesis is done', () => {
-    expect(resolveOrbPhase({ active: false, status: 'done', completed: 6, total: 6 })).toBe('done')
-  })
-
-  it('moves the fill front from left to right as progress increases', () => {
-    expect(resolveOrbFillFront(0)).toBeLessThan(resolveOrbFillFront(0.5))
-    expect(resolveOrbFillFront(0.5)).toBeLessThan(resolveOrbFillFront(1))
+  it('normalizes accepted manual color values without trusting malformed input', () => {
+    expect(resolveOrbColors({ playbackToken: '#ffffff', settled: 'green' })).toEqual({
+      synthesisToken: '#75BBFF',
+      settled: '#69DDA4',
+      playbackToken: '#FFFFFF',
+    })
   })
 })

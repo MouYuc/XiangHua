@@ -1,17 +1,27 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { api, type Config, type DoctorReport, type JobResult, type SynthesisReadiness, type SynthesisSnapshot } from './api'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { api, type Config, type DoctorReport, type JobResult, type SynthesisLanguage, type SynthesisOutput, type SynthesisReadiness, type SynthesisSnapshot, type SynthesisStreamEvent } from './api'
+import { createSynthesisStream, shouldApplySynthesisRevision, type SynthesisStreamController } from './synthesisStream'
 const AudioOrb = defineAsyncComponent(() => import('./components/AudioOrb.vue'))
 const TrainingOrbit = defineAsyncComponent(() => import('./components/TrainingOrbit.vue'))
 
-type Page = 'dashboard' | 'synthesis' | 'batch' | 'training' | 'history' | 'settings'
+type Page = 'dashboard' | 'synthesis' | 'training' | 'history' | 'settings'
 type EnvRow = { name: string; status: string; detail: string; fix: string }
-type Output = { text: string; rendered_text: string; url: string; error: string }
 type Transcript = { path: string; text: string; audio_url?: string }
 type DebugLog = { time: string; scope: string; message: string }
+type OrbSemanticToken = { outputIndex: number; tokenIndex: number; semanticFrameRate: number }
+type OrbPlayback = { outputIndex: number; currentTime: number; duration: number; tokenCount: number; frameRate: number; speed: number; paused: boolean }
+
+const languageOptions: { value: SynthesisLanguage; label: string }[] = [
+  { value: 'zh', label: '中文' },
+  { value: 'yue', label: '粤语' },
+  { value: 'en', label: '英语' },
+  { value: 'ja', label: '日语' },
+  { value: 'ko', label: '韩语' },
+]
 
 const page = ref<Page>('dashboard')
-const config = reactive<Config>({ gpt_sovits_root: '', gpt_model: '', sovits_model: '', ref_audio: '', ref_text: '', top_k: 30, top_p: .88, temperature: .95, sample_steps: 64, speed: 1, pause_second: .15, auto_lightmid: true, theme: 'auto' })
+const config = reactive<Config>({ gpt_sovits_root: '', gpt_model: '', sovits_model: '', ref_audio: '', ref_text: '', text_lang: 'zh', prompt_lang: 'zh', top_k: 30, top_p: .88, temperature: .95, sample_steps: 64, speed: 1, pause_second: .15, auto_lightmid: true, theme: 'auto', orb_synthesis_token_color: '#75BBFF', orb_settled_color: '#69DDA4', orb_playback_token_color: '#F8FBFF' })
 const environment = ref<EnvRow[]>([])
 const candidates = ref<{ label: string; path: string }[]>([])
 const history = ref<any[]>([])
@@ -22,24 +32,24 @@ const logText = ref('（还没有任务，日志将显示在这里）')
 const notice = ref('')
 const busy = ref(false)
 const synthesisText = ref('')
-const synthMode = ref<'single' | 'batch'>('single')
 const samplingOpen = ref(false)
 const historyOpen = ref(false)
 const historyTouchStartY = ref<number | null>(null)
-const synthOutputs = ref<Output[]>([])
+const synthOutputs = ref<SynthesisOutput[]>([])
 const synthesisJob = ref<SynthesisSnapshot | null>(null)
 const retryingOutputIndex = ref<number | null>(null)
 const synthesisDebugLogs = ref<DebugLog[]>([])
 const doctorReport = ref<DoctorReport | null>(null)
 const doctorBusy = ref(false)
 const synthesisReadiness = ref<SynthesisReadiness>({ status: 'warming', message: '模型预热中。', error: '' })
-const orbPlaying = ref(false)
-const batchText = ref('')
+const orbSemanticToken = ref<OrbSemanticToken | null>(null)
+const completedOrbOutputs = ref<number[]>([])
+const failedOrbOutputs = ref<number[]>([])
+const orbPlayback = ref<OrbPlayback | null>(null)
 const batchFileName = ref('')
 const batchLineCount = ref(0)
-const batchOutputDir = ref('')
-const batchZip = ref(true)
-const batchResult = ref<any>(null)
+const referenceAudioUploading = ref(false)
+const pronunciationPatchBusy = ref(false)
 const recording = ref<File | null>(null)
 const slice = reactive({ silence_threshold: -35, min_length: 4000, min_gap: 300, keep_silence: 500 })
 const whisperModel = ref('large-v3')
@@ -48,7 +58,8 @@ const experiment = ref('myvoice')
 const epochs = reactive({ s1_epochs: 15, s2_epochs: 12 })
 let polling: number | undefined
 let synthesisPoller: number | undefined
-let synthesisEventSource: EventSource | null = null
+let synthesisStream: SynthesisStreamController | null = null
+let latestSynthesisRevision = -1
 let synthesisReadinessPoller: number | undefined
 let bodyOverflowBeforeHistory = ''
 let bodyOverscrollBeforeHistory = ''
@@ -65,7 +76,7 @@ watch(historyOpen, (open) => {
   }
 })
 
-const pageTitle = computed(() => ({ dashboard: ['仪表盘', '环境、训练进度与最近合成，一屏总览'], synthesis: ['合成', '写台词，一键生成带广味的配音'], batch: ['批量合成', '上传台词文件，整批产出并打包'], training: ['训练', '从录音到专属音色：切片、识别、校对、特征、训练'], history: ['历史记录', '最近的合成记录，可回听与下载'], settings: ['设置', '模型与路径配置，保存为本机默认'] })[page.value])
+const pageTitle = computed(() => ({ dashboard: ['仪表盘', '环境、训练进度与最近合成，一屏总览'], synthesis: ['合成', '写台词，一键生成带广味的配音'], training: ['训练', '从录音到专属音色：切片、识别、校对、特征、训练'], history: ['历史记录', '最近的合成记录，可回听与下载'], settings: ['设置', '模型与路径配置，保存为本机默认'] })[page.value])
 const trainStep = (name: string) => training.value.steps?.[name] || { status: 'pending', title: name }
 const pendingTrainingSteps = computed(() => ['slice', 'asr', 'correct', 'feat', 'train'].map((key) => ({ key, ...trainStep(key) })).filter((step) => ['pending', 'running', 'fail'].includes(step.status)))
 const environmentAlerts = computed(() => environment.value.filter((row) => ['bad', 'warn'].includes(row.status)))
@@ -80,6 +91,12 @@ const totalDurationLabel = computed(() => {
 })
 const trainingProgress = computed(() => Number(trainStep('train').progress?.overall_percent || 0))
 const availableModelCount = computed(() => [config.gpt_model, config.sovits_model].filter((value) => Boolean(String(value || '').trim())).length)
+const orbColors = computed(() => ({
+  synthesisToken: config.orb_synthesis_token_color,
+  settled: config.orb_settled_color,
+  playbackToken: config.orb_playback_token_color,
+}))
+const orbColorState = computed(() => [config.orb_synthesis_token_color, config.orb_settled_color, config.orb_playback_token_color].join('|'))
 const synthesisProgress = computed(() => {
   const total = Number(synthesisJob.value?.total || 0)
   const completed = Number(synthesisJob.value?.completed || 0)
@@ -92,6 +109,45 @@ const synthesisProgress = computed(() => {
 const synthesisReady = computed(() => synthesisReadiness.value.status === 'ready')
 
 function assignConfig(value: Partial<Config>) { Object.assign(config, value) }
+let orbColorPersistTimer: number | null = null
+let orbColorHydrating = false
+function orbColorConfig(): Partial<Config> {
+  return {
+    orb_synthesis_token_color: config.orb_synthesis_token_color,
+    orb_settled_color: config.orb_settled_color,
+    orb_playback_token_color: config.orb_playback_token_color,
+  }
+}
+async function refreshConfig() {
+  try {
+    const saved = await api.get<Config>('/api/config')
+    orbColorHydrating = true
+    assignConfig(saved)
+    await nextTick()
+  } catch (error) {
+    console.debug('[config]', error instanceof Error ? error.message : String(error))
+  } finally {
+    orbColorHydrating = false
+  }
+}
+async function persistOrbColorsNow() {
+  if (orbColorPersistTimer !== null) {
+    window.clearTimeout(orbColorPersistTimer)
+    orbColorPersistTimer = null
+  }
+  try {
+    await api.put<Config>('/api/config', orbColorConfig())
+  } catch (error) {
+    showError(error)
+  }
+}
+function scheduleOrbColorPersistence() {
+  if (orbColorPersistTimer !== null) window.clearTimeout(orbColorPersistTimer)
+  orbColorPersistTimer = window.setTimeout(() => { orbColorPersistTimer = null; void persistOrbColorsNow() }, 300)
+}
+watch(orbColorState, () => {
+  if (!orbColorHydrating) scheduleOrbColorPersistence()
+})
 function showError(error: unknown) { notice.value = error instanceof Error ? error.message : String(error) }
 function showResult(result: JobResult) { notice.value = result.message; if (result.log) logText.value = result.log.text; refreshTraining() }
 function pushSynthesisDebug(scope: string, message: string) {
@@ -116,24 +172,27 @@ function snapshotLabel(snapshot: SynthesisSnapshot) {
 }
 function stopSynthesisTracking() {
   const hadPoller = Boolean(synthesisPoller)
-  const hadStream = Boolean(synthesisEventSource)
+  const hadStream = Boolean(synthesisStream)
   if (synthesisPoller) {
     window.clearInterval(synthesisPoller)
     synthesisPoller = undefined
   }
-  if (synthesisEventSource) {
-    synthesisEventSource.close()
-    synthesisEventSource = null
+  if (synthesisStream) {
+    synthesisStream.close()
+    synthesisStream = null
   }
   if (hadPoller) pushSynthesisDebug('poll', '已停止状态轮询')
   if (hadStream) pushSynthesisDebug('sse', '已关闭事件流')
 }
 function normalizeSynthesisSnapshot(data: Partial<SynthesisSnapshot> & { outputs?: any[] } | null | undefined): SynthesisSnapshot {
-  const outputs = (data?.outputs || []).map((item) => ({
+  const outputs = (data?.outputs || []).map((item, index) => ({
     text: String(item?.text || ''),
     rendered_text: String(item?.rendered_text || ''),
     url: String(item?.url || ''),
     error: String(item?.error || ''),
+    output_index: Number.isFinite(Number(item?.output_index)) ? Number(item.output_index) : index,
+    semantic_token_count: Math.max(0, Number(item?.semantic_token_count) || 0),
+    semantic_frame_rate: Math.max(0, Number(item?.semantic_frame_rate) || 0),
   }))
   return {
     job_id: String(data?.job_id || ''),
@@ -151,9 +210,25 @@ function normalizeSynthesisSnapshot(data: Partial<SynthesisSnapshot> & { outputs
     message: data?.message,
   }
 }
+function addOrbOutput(target: typeof completedOrbOutputs, outputIndex: number) {
+  if (outputIndex < 0 || target.value.includes(outputIndex)) return
+  target.value = [...target.value, outputIndex]
+}
+function syncOrbOutputs(outputs: SynthesisOutput[]) {
+  completedOrbOutputs.value = outputs.filter((output) => Boolean(output.url) && !output.error).map((output) => output.output_index)
+  failedOrbOutputs.value = outputs.filter((output) => Boolean(output.error)).map((output) => output.output_index)
+}
+function resetOrbState() {
+  latestSynthesisRevision = -1
+  orbSemanticToken.value = null
+  completedOrbOutputs.value = []
+  failedOrbOutputs.value = []
+  orbPlayback.value = null
+}
 function applySynthesisSnapshot(data: Partial<SynthesisSnapshot> & { outputs?: any[] }) {
   const snapshot = normalizeSynthesisSnapshot(data)
   synthesisJob.value = snapshot
+  syncOrbOutputs(snapshot.outputs)
   const retryIndex = retryingOutputIndex.value
   if (retryIndex === null) {
     synthOutputs.value = snapshot.outputs
@@ -179,10 +254,35 @@ function applySynthesisSnapshot(data: Partial<SynthesisSnapshot> & { outputs?: a
     notice.value = snapshot.message
   }
 }
+function applySynthesisStreamEvent(event: SynthesisStreamEvent) {
+  if (event.type === 'snapshot') {
+    applySynthesisSnapshot(event.snapshot)
+    return
+  }
+  if (event.type === 'semantic_token') {
+    orbSemanticToken.value = {
+      outputIndex: event.output_index,
+      tokenIndex: event.token_index,
+      semanticFrameRate: event.semantic_frame_rate,
+    }
+    return
+  }
+  if (event.type === 'output_completed') {
+    addOrbOutput(completedOrbOutputs, event.output_index)
+    failedOrbOutputs.value = failedOrbOutputs.value.filter((index) => index !== event.output_index)
+    return
+  }
+  if (event.type === 'output_failed') {
+    addOrbOutput(failedOrbOutputs, event.output_index)
+    completedOrbOutputs.value = completedOrbOutputs.value.filter((index) => index !== event.output_index)
+  }
+}
 async function refreshSynthesisStatus(jobId: string) {
   try {
     pushSynthesisDebug('poll', `请求 ${jobId}`)
     const data = await api.get<SynthesisSnapshot>(`/api/synthesis/status/${jobId}`)
+    if (!shouldApplySynthesisRevision(data.revision, latestSynthesisRevision)) return
+    if (Number.isFinite(Number(data.revision))) latestSynthesisRevision = Number(data.revision)
     applySynthesisSnapshot(data)
   } catch (error) {
     pushSynthesisDebug('poll', `${jobId} 获取状态失败：${error instanceof Error ? error.message : String(error)}`)
@@ -218,25 +318,24 @@ function connectSynthesisStream(jobId: string) {
     return
   }
   pushSynthesisDebug('sse', `连接 ${jobId}`)
-  synthesisEventSource = new EventSource(`/api/synthesis/events/${jobId}`)
-  synthesisEventSource.onopen = () => {
-    pushSynthesisDebug('sse', `已连接 ${jobId}`)
-  }
-  synthesisEventSource.onmessage = (event) => {
-    try {
-      pushSynthesisDebug('sse', `收到事件 ${jobId}`)
-      applySynthesisSnapshot(JSON.parse(event.data))
-    } catch {
-      pushSynthesisDebug('sse', `事件解析失败 ${jobId}`)
-    }
-  }
-  synthesisEventSource.onerror = () => {
-    pushSynthesisDebug('sse', `连接异常或断开 ${jobId}`)
-    if (synthesisEventSource) {
-      synthesisEventSource.close()
-      synthesisEventSource = null
-    }
-  }
+  synthesisStream = createSynthesisStream({
+    jobId,
+    createEventSource: url => new EventSource(url),
+    onOpen: () => pushSynthesisDebug('sse', `已连接 ${jobId}`),
+    onEvent: raw => {
+      try {
+        pushSynthesisDebug('sse', `收到事件 ${jobId}`)
+        const event = JSON.parse(raw) as SynthesisStreamEvent
+        if (!shouldApplySynthesisRevision(event.revision, latestSynthesisRevision)) return
+        if (Number.isFinite(Number(event.revision))) latestSynthesisRevision = Number(event.revision)
+        applySynthesisStreamEvent(event)
+      } catch {
+        pushSynthesisDebug('sse', `事件解析失败 ${jobId}`)
+      }
+    },
+    onError: () => pushSynthesisDebug('sse', `连接异常或断开 ${jobId}`),
+    onRetry: (attempt, delay) => pushSynthesisDebug('sse', `${delay}ms 后第 ${attempt} 次重连`),
+  })
 }
 function startSynthesisTracking(jobId: string) {
   stopSynthesisTracking()
@@ -269,15 +368,17 @@ async function runDoctor(repair: boolean) {
     doctorBusy.value = false
   }
 }
-async function synthesize() {
+async function startSynthesis(text: string) {
+  if (!text.trim()) return showError('请先输入台词，或导入 TXT。')
   busy.value = true
   synthOutputs.value = []
   synthesisJob.value = null
+  resetOrbState()
   try {
     stopSynthesisTracking()
     synthesisDebugLogs.value = []
-    pushSynthesisDebug('start', `提交合成请求，文本长度 ${synthesisText.value.length}`)
-    const data = await api.post<SynthesisSnapshot>('/api/synthesis', { ...config, text: synthesisText.value })
+    pushSynthesisDebug('start', `提交合成请求，文本长度 ${text.length}`)
+    const data = await api.post<SynthesisSnapshot>('/api/synthesis', { ...config, text })
     pushSynthesisDebug('start', `收到任务 ${data.job_id || 'unknown'}，状态 ${data.status}`)
     applySynthesisSnapshot(data)
     if (data.job_id && data.status !== 'done' && data.status !== 'failed') {
@@ -296,6 +397,7 @@ async function retryOutput(index: number) {
   busy.value = true
   retryingOutputIndex.value = index
   synthesisJob.value = null
+  resetOrbState()
   stopSynthesisTracking()
   pushSynthesisDebug('retry', `重新合成第 ${index + 1} 句：${item.text}`)
   try {
@@ -308,9 +410,75 @@ async function retryOutput(index: number) {
     showError(error)
   }
 }
-async function loadBatchFile(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (file) batchText.value = await file.text() }
-async function loadSynthesisBatchFile(event: Event) { const input = event.target as HTMLInputElement; const file = input.files?.[0]; if (!file) return; batchText.value = await file.text(); batchFileName.value = file.name; batchLineCount.value = batchText.value.split(/\r?\n/).filter((line) => line.trim()).length; pushSynthesisDebug('file', `已导入批量台词 ${file.name}，共 ${batchLineCount.value} 行`); input.value = '' }
-async function synthesizeBatch() { if (!batchText.value.trim()) return showError('请先导入 TXT 台词文件。'); busy.value = true; try { batchResult.value = await api.post<any>('/api/batch-synthesis', { ...config, text: batchText.value, output_dir: batchOutputDir.value || null, zip_output: batchZip.value }); synthOutputs.value = batchResult.value.outputs || []; notice.value = `完成 ${batchResult.value.completed}/${batchResult.value.total}`; await refreshOverview(); await refreshHistory() } catch (error) { showError(error) } finally { busy.value = false } }
+function playbackOutputIndex(index: number) {
+  return synthOutputs.value[index]?.output_index ?? index
+}
+function readOrbPlayback(index: number, audio: HTMLAudioElement, paused: boolean): OrbPlayback {
+  const output = synthOutputs.value[index]
+  return {
+    outputIndex: playbackOutputIndex(index),
+    currentTime: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+    duration: Number.isFinite(audio.duration) ? audio.duration : 0,
+    tokenCount: Math.max(0, output?.semantic_token_count || 0),
+    frameRate: Math.max(0, output?.semantic_frame_rate || 0),
+    speed: Math.max(0, Number(config.speed) || 1),
+    paused,
+  }
+}
+function startOrbPlayback(index: number, event: Event) {
+  const audio = event.currentTarget as HTMLAudioElement
+  orbPlayback.value = readOrbPlayback(index, audio, false)
+}
+function updateOrbPlayback(index: number, event: Event) {
+  const audio = event.currentTarget as HTMLAudioElement
+  orbPlayback.value = readOrbPlayback(index, audio, audio.paused)
+}
+function pauseOrbPlayback(index: number) {
+  if (orbPlayback.value?.outputIndex === playbackOutputIndex(index)) {
+    orbPlayback.value = { ...orbPlayback.value, paused: true }
+  }
+}
+function endOrbPlayback(index: number) {
+  pauseOrbPlayback(index)
+}
+async function uploadReferenceAudio(event: Event) {
+  const input = event.target as HTMLInputElement
+  const audio = input.files?.[0]
+  input.value = ''
+  if (!audio) return
+  const body = new FormData()
+  body.append('audio', audio)
+  referenceAudioUploading.value = true
+  try {
+    const result = await api.post<{ path: string }>('/api/reference-audio', body)
+    config.ref_audio = result.path
+    notice.value = '参考音频已上传。'
+  } catch (error) {
+    showError(error)
+  } finally {
+    referenceAudioUploading.value = false
+  }
+}
+async function importPronunciationPatch(event: Event) {
+  const input = event.target as HTMLInputElement
+  const patch = input.files?.[0]
+  input.value = ''
+  if (!patch) return
+  const body = new FormData()
+  body.append('patch', patch)
+  pronunciationPatchBusy.value = true
+  try {
+    const result = await api.post<{ message: string }>('/api/engine/pronunciation-patch', body)
+    notice.value = result.message
+  } catch (error) {
+    showError(error)
+  } finally {
+    pronunciationPatchBusy.value = false
+  }
+}
+async function synthesize() { await startSynthesis(synthesisText.value) }
+async function synthesizeBatch() { await startSynthesis(synthesisText.value) }
+async function loadSynthesisBatchFile(event: Event) { const input = event.target as HTMLInputElement; const file = input.files?.[0]; if (!file) return; synthesisText.value = await file.text(); batchFileName.value = file.name; batchLineCount.value = synthesisText.value.split(/\r?\n/).filter((line) => line.trim()).length; pushSynthesisDebug('file', `已导入批量台词 ${file.name}，共 ${batchLineCount.value} 行`); input.value = '' }
 async function openHistory() { historyOpen.value = true; await refreshHistory() }
 function closeHistory() { historyOpen.value = false; historyTouchStartY.value = null }
 function historyTouchStart(event: TouchEvent) { historyTouchStartY.value = event.touches[0]?.clientY ?? null }
@@ -324,8 +492,12 @@ async function stopTraining() { await trainingAction('/api/training/stop', {}) }
 async function selectModels() { try { const data = await api.post<any>('/api/training/models/select'); assignConfig(data.config); notice.value = data.message } catch (error) { showError(error) } }
 function cycleTheme() { config.theme = config.theme === 'dark' ? 'light-green' : config.theme === 'light-green' ? 'light-blue' : 'dark'; saveConfig() }
 
-onMounted(async () => { await refreshOverview(); await refreshHistory(); await scanEnvironment(); await refreshSynthesisReadiness(); if (synthesisReadiness.value.status === 'warming') synthesisReadinessPoller = window.setInterval(() => { void refreshSynthesisReadiness() }, 1000); polling = window.setInterval(() => { if (page.value === 'training' || running.value.length) refreshTraining() }, 2500) })
+onMounted(async () => { await refreshConfig(); await refreshOverview(); await refreshHistory(); await scanEnvironment(); await refreshSynthesisReadiness(); if (synthesisReadiness.value.status === 'warming') synthesisReadinessPoller = window.setInterval(() => { void refreshSynthesisReadiness() }, 1000); polling = window.setInterval(() => { if (page.value === 'training' || running.value.length) refreshTraining() }, 2500) })
  onBeforeUnmount(() => {
+   if (orbColorPersistTimer !== null) {
+     window.clearTimeout(orbColorPersistTimer)
+     orbColorPersistTimer = null
+   }
    if (polling) window.clearInterval(polling)
    if (synthesisReadinessPoller) window.clearInterval(synthesisReadinessPoller)
    stopSynthesisTracking()
@@ -337,7 +509,7 @@ onMounted(async () => { await refreshOverview(); await refreshHistory(); await s
 </script>
 
 <template>
-  <main class="app-shell app-glow" :class="{'batch-mode': page === 'synthesis' && synthMode === 'batch', 'history-drawer-open': historyOpen && page === 'synthesis'}" :data-theme="config.theme">
+  <main class="app-shell app-glow" :class="{'history-drawer-open': historyOpen && page === 'synthesis'}" :data-theme="config.theme">
     <aside class="sidebar"><div class="brand"><img src="/logo.png" alt="像话" /><span>像话<br><small>XiangHua</small></span></div>
       <nav><button v-for="item in [['dashboard','仪表盘'],['synthesis','合成'],['training','训练'],['history','历史记录'],['settings','设置']]" :key="item[0]" :class="{active: page === item[0]}" @click="page = item[0] as Page">{{ item[1] }}</button></nav>
       <a class="doc-link" href="https://github.com/MouYuc/Clone-youself/blob/main/docs/WEBUI_GUIDE.md" target="_blank" rel="noreferrer">使用文档</a>
@@ -349,8 +521,7 @@ onMounted(async () => { await refreshOverview(); await refreshHistory(); await s
         <section class="panel"><h2>训练进度</h2><div class="progress"><span :style="{width: (trainStep('train').progress?.overall_percent || 0) + '%'}"></span></div><strong>{{ trainStep('train').progress?.overall_percent || 0 }}%</strong><p>{{ trainStep('train').title }} · {{ trainStep('train').status }}</p><div class="step-pills"><span v-for="key in ['slice','asr','correct','feat','train']" :key="key" :class="trainStep(key).status">{{ trainStep(key).title }}</span></div><button @click="page = 'training'">进入训练</button></section>
          <section class="panel wide"><div class="panel-head"><h2>最近合成</h2><button @click="page = 'history'">全部记录</button></div><div v-if="!history.length" class="empty">还没有合成记录。</div><div v-for="item in history.slice(0, 5)" :key="item.time + item.name" class="history-row"><span>{{ item.time }}</span><span>{{ item.text }}</span><audio v-if="item.url" controls :src="item.url"></audio></div></section></div></template>
 
-       <template v-else-if="page === 'synthesis'"><div class="synthesis-grid"><section class="panel lyric-panel"><div class="lyric-head"><label>台词<input v-model="synthesisText" class="visually-hidden" aria-label="台词" /></label><label class="synthesis-upload">导入 TXT<input type="file" accept=".txt,text/plain" @change="loadSynthesisBatchFile" /></label><span v-if="batchFileName" class="synthesis-upload-status">{{ batchFileName }} · {{ batchLineCount }} 行</span></div><p v-if="!synthesisReady" class="notice" role="status">{{ synthesisReadiness.status === 'warming' ? '模型预热中，请稍候。' : synthesisReadiness.error || synthesisReadiness.message }} <button v-if="synthesisReadiness.status === 'failed'" type="button" @click="retrySynthesisWarmup">重新预热</button></p><div class="lyric-editor-row" :class="{ 'sampling-open': samplingOpen }"><textarea v-model="synthesisText" placeholder="一行一句，# 开头为注释"></textarea><aside class="sampling-panel" :class="{ 'is-open': samplingOpen }" aria-label="采样参数" :aria-hidden="!samplingOpen" :inert="!samplingOpen"><div class="sampling-panel-head"><strong>采样参数</strong><button type="button" aria-label="关闭采样参数" @click="samplingOpen = false">×</button></div><div class="control-grid"><label>Top K<input v-model.number="config.top_k" type="number" /></label><label>Top P<input v-model.number="config.top_p" type="number" step=".01" /></label><label>温度<input v-model.number="config.temperature" type="number" step=".01" /></label><label>采样步数<input v-model.number="config.sample_steps" type="number" /></label><label>语速<input v-model.number="config.speed" type="number" step=".05" /></label><label>句间停顿<input v-model.number="config.pause_second" type="number" step=".05" /></label></div></aside></div><div class="inline-controls"><button type="button" class="sampling-toggle" :aria-expanded="samplingOpen" @click="samplingOpen = !samplingOpen">{{ samplingOpen ? '收起参数' : '采样参数' }}</button><label><input v-model="config.auto_lightmid" type="checkbox" /> 自动转轻中广普</label><button type="button" class="batch-action" :disabled="busy || !synthesisReady || !batchText.trim()" @click="synthesizeBatch">{{ busy ? '批量合成中…' : '批量合成' }}</button><button class="primary" :disabled="busy || !synthesisReady" @click="synthesize">{{ busy ? '合成中…' : '开始合成' }}</button><button @click="synthesisText = ''; synthOutputs = []; synthesisJob = null">清空</button></div></section><section class="panel output-panel"><h2>输出</h2><div v-if="synthesisJob"><div class="progress"><span :style="{width: synthesisProgress + '%'}"></span></div><p>{{ synthesisJob.completed }}/{{ synthesisJob.total }} · {{ synthesisJob.phase }} · {{ synthesisJob.current_text || synthesisJob.message }}</p></div><AudioOrb :active="busy || orbPlaying" :status="synthesisJob?.status" :phase="synthesisJob?.phase" :completed="synthesisJob?.completed || 0" :total="synthesisJob?.total || 0" :progress="synthesisJob?.progress" :label="synthOutputs.length ? '点击试听结果' : '等待合成'" /><div v-if="!synthOutputs.length" class="empty">合成结果会显示在这里。</div><div v-for="(item, index) in synthOutputs" :key="`${item.text}-${index}`" class="output-row"><span>{{ item.text }}</span><audio v-if="item.url" controls :src="item.url" @play="orbPlaying = true" @pause="orbPlaying = false" @ended="orbPlaying = false"></audio><button type="button" :disabled="busy || !synthesisReady" @click="retryOutput(index)">{{ retryingOutputIndex === index ? '重试中…' : '重试' }}</button><a v-if="item.url" :href="item.url" download>下载</a><small v-if="item.error">{{ item.error }}</small></div><section class="debug-panel" aria-label="合成调试日志"><div class="panel-head"><h2>调试日志</h2><button type="button" @click="clearSynthesisDebugLogs">清空</button></div><div v-if="!synthesisDebugLogs.length" class="empty compact-empty">日志会显示在这里。</div><ul v-else class="debug-log-list"><li v-for="(entry, index) in synthesisDebugLogs" :key="`${entry.time}-${entry.scope}-${index}`"><span class="debug-log-time">{{ entry.time }}</span><b class="debug-log-scope">{{ entry.scope }}</b><span class="debug-log-message">{{ entry.message }}</span></li></ul></section></section><section class="panel model-panel"><h2>模型与参考音频</h2><div class="form-grid"><label>GPT 模型<input v-model="config.gpt_model" /></label><label>SoVITS 模型<input v-model="config.sovits_model" /></label><label>参考音频<input v-model="config.ref_audio" /></label><label>参考文本<input v-model="config.ref_text" /></label></div><button @click="saveConfig">保存为默认</button></section></div></template>
-      <template v-else-if="page === 'batch'"><section class="panel batch-panel"><h2>批量台词</h2><input type="file" accept=".txt,text/plain" @change="loadBatchFile" /><textarea v-model="batchText" placeholder="上传 UTF-8 文本文件，或直接粘贴台词"></textarea><div class="form-grid"><label>输出目录（可选）<input v-model="batchOutputDir" placeholder="G:\output\my-batch" /></label><label><input v-model="batchZip" type="checkbox" /> 额外打包 ZIP</label></div><button class="primary" :disabled="busy" @click="synthesizeBatch">开始批量合成</button><div v-if="batchResult" class="output-list"><div v-for="item in batchResult.outputs" :key="item.text" class="output-row"><span>{{ item.text }}</span><audio v-if="item.url" controls :src="item.url"></audio><small v-if="item.error">{{ item.error }}</small></div><a v-if="batchResult.zip_url" :href="batchResult.zip_url" download>下载 ZIP</a></div></section></template>
+       <template v-else-if="page === 'synthesis'"><div class="synthesis-grid"><section class="panel lyric-panel"><div class="lyric-head"><label>台词<input v-model="synthesisText" class="visually-hidden" aria-label="台词" /></label><label class="language-control">文本语言<select v-model="config.text_lang"><option v-for="option in languageOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label class="synthesis-upload">导入 TXT<input type="file" accept=".txt,text/plain" @change="loadSynthesisBatchFile" /></label><span v-if="batchFileName" class="synthesis-upload-status">{{ batchFileName }} · {{ batchLineCount }} 行</span></div><p v-if="!synthesisReady" class="notice" role="status">{{ synthesisReadiness.status === 'warming' ? '模型预热中，请稍候。' : synthesisReadiness.error || synthesisReadiness.message }} <button v-if="synthesisReadiness.status === 'failed'" type="button" @click="retrySynthesisWarmup">重新预热</button></p><div class="lyric-editor-row" :class="{ 'sampling-open': samplingOpen }"><textarea v-model="synthesisText" placeholder="一行一句，# 开头为注释"></textarea><aside class="sampling-panel" :class="{ 'is-open': samplingOpen }" aria-label="采样参数" :aria-hidden="!samplingOpen" :inert="!samplingOpen"><div class="sampling-panel-head"><strong>采样参数</strong><button type="button" aria-label="关闭采样参数" @click="samplingOpen = false">×</button></div><div class="control-grid"><label>Top K<input v-model.number="config.top_k" type="number" /></label><label>Top P<input v-model.number="config.top_p" type="number" step=".01" /></label><label>温度<input v-model.number="config.temperature" type="number" step=".01" /></label><label>采样步数<input v-model.number="config.sample_steps" type="number" /></label><label>语速<input v-model.number="config.speed" type="number" step=".05" /></label><label>句间停顿<input v-model.number="config.pause_second" type="number" step=".05" /></label></div></aside></div><div class="inline-controls"><button type="button" class="sampling-toggle" :aria-expanded="samplingOpen" @click="samplingOpen = !samplingOpen">{{ samplingOpen ? '收起参数' : '采样参数' }}</button><label><input v-model="config.auto_lightmid" type="checkbox" :disabled="config.text_lang !== 'zh'" /> 自动转轻中广普</label><button type="button" class="batch-action" :disabled="busy || !synthesisReady || !synthesisText.trim()" @click="synthesizeBatch">{{ busy ? '批量合成中…' : '批量合成' }}</button><button class="primary" :disabled="busy || !synthesisReady" @click="synthesize">{{ busy ? '合成中…' : '开始合成' }}</button><button @click="synthesisText = ''; synthOutputs = []; synthesisJob = null; resetOrbState()">清空</button></div></section><section class="panel output-panel"><h2>输出</h2><div v-if="synthesisJob"><div class="progress"><span :style="{width: synthesisProgress + '%'}"></span></div><p>{{ synthesisJob.completed }}/{{ synthesisJob.total }} · {{ synthesisJob.phase }} · {{ synthesisJob.current_text || synthesisJob.message }}</p></div><AudioOrb :active="busy" :total="synthesisJob?.total || 0" :completed-output-indexes="completedOrbOutputs" :failed-output-indexes="failedOrbOutputs" :semantic-token="orbSemanticToken" :playback="orbPlayback" :colors="orbColors" :label="synthOutputs.length ? '点击试听结果' : '等待合成'" /><div class="orb-color-controls" aria-label="粒子颜色"><label>合成色<input v-model="config.orb_synthesis_token_color" type="color" /></label><label>聚合色<input v-model="config.orb_settled_color" type="color" /></label><label>播放色<input v-model="config.orb_playback_token_color" type="color" /></label></div><div v-if="!synthOutputs.length" class="empty">合成结果会显示在这里。</div><div v-for="(item, index) in synthOutputs" :key="`${item.text}-${index}`" class="output-row"><span>{{ item.text }}</span><audio v-if="item.url" controls :src="item.url" @play="startOrbPlayback(index, $event)" @timeupdate="updateOrbPlayback(index, $event)" @pause="pauseOrbPlayback(index)" @ended="endOrbPlayback(index)"></audio><button type="button" :disabled="busy || !synthesisReady" @click="retryOutput(index)">{{ retryingOutputIndex === index ? '重试中…' : '重试' }}</button><a v-if="item.url" :href="item.url" download>下载</a><small v-if="item.error">{{ item.error }}</small></div><section class="debug-panel" aria-label="合成调试日志"><div class="panel-head"><h2>调试日志</h2><button type="button" @click="clearSynthesisDebugLogs">清空</button></div><div v-if="!synthesisDebugLogs.length" class="empty compact-empty">日志会显示在这里。</div><ul v-else class="debug-log-list"><li v-for="(entry, index) in synthesisDebugLogs" :key="`${entry.time}-${entry.scope}-${index}`"><span class="debug-log-time">{{ entry.time }}</span><b class="debug-log-scope">{{ entry.scope }}</b><span class="debug-log-message">{{ entry.message }}</span></li></ul></section></section><section class="panel model-panel"><h2>模型与参考音频</h2><div class="form-grid"><label>GPT 模型<input v-model="config.gpt_model" /></label><label>SoVITS 模型<input v-model="config.sovits_model" /></label><label>参考语言<select v-model="config.prompt_lang"><option v-for="option in languageOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><div class="reference-audio-control"><label for="reference-audio-path">参考音频</label><div class="reference-audio-row"><input id="reference-audio-path" v-model="config.ref_audio" /><label class="reference-audio-upload">{{ referenceAudioUploading ? '上传中…' : '上传' }}<input type="file" accept=".wav,.mp3,.m4a,.flac,.ogg,audio/*" :disabled="referenceAudioUploading" @change="uploadReferenceAudio" /></label></div></div><label>参考文本<input v-model="config.ref_text" /></label><div class="reference-audio-control"><label for="pronunciation-patch">发音补丁</label><div class="reference-audio-row"><input id="pronunciation-patch" value="从仓库下载 pinyin.patch 后导入" readonly /><label class="reference-audio-upload">{{ pronunciationPatchBusy ? '导入中…' : '导入补丁' }}<input type="file" accept=".patch,.diff" :disabled="pronunciationPatchBusy" @change="importPronunciationPatch" /></label></div></div></div><button @click="saveConfig">保存为默认</button></section></div></template>
 
       <template v-else-if="page === 'training'"><div class="training-top"><section class="panel"><div class="panel-head"><h2>训练环境</h2><div><button @click="trainingAction('/api/training/patch')">应用补丁</button><button @click="trainingAction('/api/training/dependencies')">安装依赖</button></div></div><div class="env-list"><div v-for="row in environment" :key="row.name"><span><i :class="row.status"></i>{{ row.name }}</span><span>{{ row.detail }}</span></div></div></section><section class="panel stats"><h2>训练数据</h2><strong>{{ stats.sliced ?? '—' }}</strong><span>切片数</span><strong>{{ stats.lines ?? '—' }}</strong><span>标注行数</span><strong>{{ stats.duration ? Number(stats.duration / 60).toFixed(1) + ' 分钟' : '—' }}</strong><span>录音总时长</span></section><TrainingOrbit :steps="training.steps || {}" /></div>
         <section class="panel step-card"><div><h2>① 录音与切片</h2><p>{{ trainStep('slice').status }}</p><input type="file" accept="audio/*" @change="recording = ($event.target as HTMLInputElement).files?.[0] || null" /><div class="control-grid compact"><label>静音阈值<input v-model.number="slice.silence_threshold" type="number" /></label><label>最短段长<input v-model.number="slice.min_length" type="number" /></label><label>最短间隔<input v-model.number="slice.min_gap" type="number" /></label><label>保留静音<input v-model.number="slice.keep_silence" type="number" /></label></div></div><button class="primary" :disabled="busy" @click="startSlice">提交切片</button></section>

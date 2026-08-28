@@ -412,10 +412,16 @@ header p { color:var(--studio-muted); }
 .synthesis-grid .debug-panel { height:198px; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
 .synthesis-grid .debug-panel .panel-head { flex:0 0 auto; }
 .synthesis-grid .debug-log-list { height:154px; max-height:154px; min-height:0; flex:1 1 auto; overflow:auto; overscroll-behavior:contain; }
+.orb-color-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:9px 0 4px; }
+.orb-color-controls label { display:flex; align-items:center; gap:6px; color:#607568; font-size:11px; font-weight:700; }
+.orb-color-controls input[type="color"] { width:26px; height:26px; padding:2px; border:1px solid #cbdccf; border-radius:5px; background:#fff; cursor:pointer; }
+.app-shell[data-theme="dark"] .orb-color-controls label { color:#b8d1bc; }
+.app-shell[data-theme="dark"] .orb-color-controls input[type="color"] { border-color:#456b4c; background:#1d3022; }
 @media (max-width:680px) {
   .synthesis-grid .lyric-panel { height:auto; min-height:0; overflow:visible; }
   .synthesis-grid .lyric-panel textarea { flex:none; height:260px; min-height:220px; }
   .synthesis-grid .output-panel { display:block; height:auto; overflow:visible; }
+  .orb-color-controls { justify-content:space-between; }
   .synthesis-grid .model-panel { grid-column:auto; grid-row:auto; }
   .synthesis-grid .debug-panel { height:198px; }
 }
@@ -440,6 +446,14 @@ header p { color:var(--studio-muted); }
 .synthesis-upload { display:inline-flex; align-items:center; min-height:34px; padding:7px 10px; border:1px dashed #9dbc9f; border-radius:8px; color:#386247; background:#edf7ef; font-size:11px !important; font-weight:700 !important; cursor:pointer; }
 .synthesis-upload input { display:none; }
 .synthesis-upload-status { max-width:220px; overflow:hidden; color:#6b8070; font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.language-control { display:flex; align-items:center; gap:6px; margin-left:auto; color:#5f7464 !important; font-size:11px !important; font-weight:700 !important; }
+.language-control select,.model-panel .form-grid select { min-height:34px; border:1px solid #c8ddcb; border-radius:7px; padding:5px 8px; color:#315d3e; background:#f7fbf7; font-size:11px; }
+.model-panel .reference-audio-control { display:grid; min-width:0; gap:5px; }
+.model-panel .reference-audio-control > label { color:#65766b; font-size:11px; font-weight:600; letter-spacing:.01em; }
+.reference-audio-row { display:flex; min-width:0; gap:8px; }
+.reference-audio-row > input { flex:1 1 auto; min-width:0; }
+.reference-audio-upload { flex:0 0 auto; display:inline-flex; align-items:center; min-height:38px; padding:0 10px; border:1px solid #c8ddcb; border-radius:7px; color:#386247; background:#edf7ef; font-size:11px; font-weight:700; cursor:pointer; white-space:nowrap; }
+.reference-audio-upload input[type="file"] { display:none; }
 .batch-action { color:#386247; background:#edf7ef; border-color:#c8ddcb; }
 .batch-action:disabled { background:#f4f7f4; }
 .inline-controls .sampling-toggle { flex:0 0 auto; min-height:34px; color:#386247; background:#edf7ef; border-color:#c8ddcb; font-size:11px; }
@@ -449,6 +463,7 @@ header p { color:var(--studio-muted); }
   .lyric-head label { font-size:15px; }
   .lyric-head { flex-wrap:wrap; }
   .synthesis-upload-status { max-width:100%; }
+  .language-control { margin-left:0; }
   .lyric-editor-row { flex-direction:column; gap:0; overflow:visible; }
   .lyric-editor-row.sampling-open { gap:10px; }
   .lyric-editor-row > textarea { flex:none; height:260px; min-height:220px; }

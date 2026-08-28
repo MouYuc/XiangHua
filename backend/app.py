@@ -16,7 +16,6 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.schemas import (
-    BatchRequest,
     ConfigUpdate,
     DoctorRequest,
     EnvironmentSelectRequest,
@@ -88,6 +87,13 @@ def _public_synthesis_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any
         row["url"] = _as_url(str(row.get("download_id") or ""))
         outputs.append(row)
     data["outputs"] = outputs
+    return data
+
+
+def _public_synthesis_event(event: dict[str, Any]) -> dict[str, Any]:
+    data = dict(event)
+    if data.get("type") == "snapshot":
+        data["snapshot"] = _public_synthesis_snapshot(data.get("snapshot"))
     return data
 
 
@@ -187,6 +193,29 @@ def create_app() -> FastAPI:
     def doctor(request: DoctorRequest) -> dict[str, Any]:
         return run_doctor(repair=request.repair)
 
+    @app.post("/api/reference-audio")
+    def upload_reference_audio(audio: UploadFile = File(...)) -> dict[str, str]:
+        try:
+            path = core.save_reference_audio(audio.filename or "", audio.file)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="参考音频保存失败。") from exc
+        return {"path": str(path)}
+
+    @app.post("/api/engine/pronunciation-patch")
+    def import_pronunciation_patch(patch: UploadFile = File(...)) -> dict[str, str]:
+        root = core.load_config()["gpt_sovits_root"]
+        if not (Path(root) / "GPT_SoVITS").is_dir():
+            raise HTTPException(status_code=400, detail="GPT-SoVITS 根目录不可用。")
+        try:
+            message = core.apply_pronunciation_patch(root, patch.filename or "", patch.file)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="发音补丁导入失败。") from exc
+        return {"message": message}
+
     @app.post("/api/synthesis")
     def synthesis(request: SynthesisRequest) -> dict[str, Any]:
         readiness = core.SYNTHESIS_BACKEND.warmup_status()
@@ -211,38 +240,14 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="合成任务不存在。")
 
         async def stream():
-            async for snapshot in SYNTHESIS_JOBS.stream(job_id):
-                yield f"data: {json.dumps(_public_synthesis_snapshot(snapshot), ensure_ascii=False)}\n\n"
+            async for event in SYNTHESIS_JOBS.stream(job_id):
+                yield f"data: {json.dumps(_public_synthesis_event(event), ensure_ascii=False)}\n\n"
 
         return StreamingResponse(
             stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-
-    @app.post("/api/batch-synthesis")
-    def batch_synthesis(request: BatchRequest) -> dict[str, Any]:
-        readiness = core.SYNTHESIS_BACKEND.warmup_status()
-        if readiness["status"] in {"warming", "failed"}:
-            raise HTTPException(status_code=409, detail=readiness["message"])
-        config = _merge_config(request)
-        destination = Path(request.output_dir).expanduser() if request.output_dir else None
-        if destination and not destination.is_absolute():
-            raise HTTPException(status_code=400, detail="输出目录必须是绝对路径。")
-        try:
-            result = core.synthesize_lines(config, request.text, destination)
-        except (RuntimeError, ValueError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        zip_path = ""
-        if request.zip_output and result["completed"]:
-            archive = core.OUTPUT_DIR / f"batch_{Path(result['output_dir']).name}"
-            zip_path = shutil.make_archive(str(archive), "zip", str(result["output_dir"]))
-        for item in result["outputs"]:
-            file_path = item.pop("file", "")
-            item["download_id"] = item.get("download_id") or (core.register_download(file_path) if file_path else "")
-            item["url"] = _as_url(item["download_id"])
-        result["zip_url"] = _as_url(core.register_download(zip_path)) if zip_path else ""
-        return result
 
     @app.get("/api/history")
     def history() -> list[dict[str, Any]]:

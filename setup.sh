@@ -43,16 +43,11 @@ fi
 echo "[4/6] 安装 GPT-SoVITS 依赖 ..."
 "$PYBIN" -m pip install -r "$GPT_ROOT/extra-req.txt" --no-deps
 "$PYBIN" -m pip install -r "$GPT_ROOT/requirements.txt"
-"$PYBIN" -m pip install faster-whisper noisereduce
+"$PYBIN" -m pip install faster-whisper noisereduce eunjeon
 
-# 5. 广普补丁
-echo "[5/6] 应用广普发音补丁 ..."
-cd "$GPT_ROOT"
-if git apply --check "$REPO_ROOT/patches/pinyin.patch" 2>/dev/null; then
-  git apply "$REPO_ROOT/patches/pinyin.patch"
-else
-  echo "补丁可能已应用，跳过（见 patches/README.md）"
-fi
+# 5. V11 token 回调
+echo "[5/6] 注入 V11 语义 token 回调 ..."
+"$PYBIN" "$REPO_ROOT/tools/gpt_sovits_orb_patch.py" "$GPT_ROOT"
 
 # 6. 预训练底模
 echo "[6/6] 下载预训练底模（$SOURCE）..."
