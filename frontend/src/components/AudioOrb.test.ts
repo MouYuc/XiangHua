@@ -1,28 +1,38 @@
 import { describe, expect, it } from 'vitest'
 import orbSource from './AudioOrb.vue?raw'
 
-describe('AudioOrb synthesis progress wiring', () => {
-  it('accepts synthesis status and counters for phase-driven rendering', () => {
-    expect(orbSource).toContain("status?: string")
-    expect(orbSource).toContain("completed?: number")
-    expect(orbSource).toContain("total?: number")
-    expect(orbSource).toContain("progress?: number")
-    expect(orbSource).toContain('resolveOrbPhase')
-    expect(orbSource).toContain('resolveOrbChargeProgress')
+describe('AudioOrb V11 renderer contract', () => {
+  it('accepts explicit per-output synthesis and playback state', () => {
+    expect(orbSource).toContain('completedOutputIndexes')
+    expect(orbSource).toContain('failedOutputIndexes')
+    expect(orbSource).toContain('semanticToken')
+    expect(orbSource).toContain('playback')
+    expect(orbSource).toContain('colors')
   })
 
-  it('exposes the active phase and progress to the visual surface', () => {
-    expect(orbSource).toContain('orb-phase-')
-    expect(orbSource).toContain('data-phase')
+  it('assigns particles to interleaved output shares rather than a directional fill', () => {
+    expect(orbSource).toContain('particleGroup(index, props.total)')
+    expect(orbSource).toContain('settledAt')
+    expect(orbSource).not.toContain('resolveOrbChargeProgress')
+    expect(orbSource).not.toContain('resolveOrbFillFront')
+    expect(orbSource).not.toContain('progress?: number')
   })
 
-  it('uses the same canvas particle charging renderer as the approved preview', () => {
+  it('keeps Canvas 2D rendering and color-specific token waves', () => {
     expect(orbSource).toContain("getContext('2d')")
-    expect(orbSource).toContain('chargingBand')
+    expect(orbSource).toContain('resolveOrbColors')
+    expect(orbSource).toContain('playbackToken')
     expect(orbSource).toContain('shadowBlur')
-    expect(orbSource).toContain('resolveOrbAssemblyProgress')
-    expect(orbSource).toContain('sphereScale')
     expect(orbSource).not.toContain('IcosahedronGeometry')
-    expect(orbSource).not.toContain('orb-progress')
+  })
+
+  it('accepts empty transient token and playback state between interactions', () => {
+    expect(orbSource).toContain('semanticToken?: OrbToken | null')
+    expect(orbSource).toContain('playback?: OrbPlayback | null')
+  })
+
+  it('clears playback waves only when switching to another output', () => {
+    expect(orbSource).toContain('activePlaybackOutput')
+    expect(orbSource).toContain("waves[index].source === 'playback'")
   })
 })

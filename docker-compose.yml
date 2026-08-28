@@ -1,6 +1,6 @@
 services:
   XiangHua:
-    image: ghcr.io/mouyuc/clone-youself:latest
+    image: xianghua:local
     container_name: XiangHua
     runtime: nvidia
     environment:

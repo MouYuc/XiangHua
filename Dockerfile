@@ -1,5 +1,5 @@
 # GuangPu-TTS 环境镜像（不含任何声音模型）
-# 基于 GPT-SoVITS 官方 torch-base，构建时克隆引擎并打广普补丁
+# 基于 GPT-SoVITS 官方 torch-base，构建时克隆引擎并注入 V11 token 回调
 FROM node:24-alpine AS frontend-build
 WORKDIR /frontend
 COPY frontend/package*.json ./
@@ -24,26 +24,38 @@ RUN git clone https://github.com/RVC-Boss/GPT-SoVITS.git /tmp/gs \
     && cp -a /tmp/gs/. . \
     && rm -rf /tmp/gs
 
-# 2. 应用广普发音词典补丁
-COPY patches/pinyin.patch /tmp/pinyin.patch
-RUN git apply /tmp/pinyin.patch \
-    && rm /tmp/pinyin.patch
+# 2. 注入 V11 语义 token 回调；发音补丁由用户运行时导入
+COPY tools/gpt_sovits_orb_patch.py /tmp/gpt_sovits_orb_patch.py
+RUN python /tmp/gpt_sovits_orb_patch.py /workspace/GPT-SoVITS \
+    && grep -q semantic_token_callback GPT_SoVITS/AR/models/t2s_model.py \
+    && grep -q semantic_token_callback GPT_SoVITS/TTS_infer_pack/TTS.py \
+    && rm /tmp/gpt_sovits_orb_patch.py
 
 # 3. 构建工具 + ffmpeg（opencc/pyopenjtalk 等需要编译）
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        cmake build-essential ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# 构建网络访问 Ubuntu 官方源不稳定时，切换到国内镜像源
+RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i \
+        -e 's#http://archive.ubuntu.com#https://mirrors.tuna.tsinghua.edu.cn#g' \
+        -e 's#https://archive.ubuntu.com#https://mirrors.tuna.tsinghua.edu.cn#g' \
+        -e 's#http://security.ubuntu.com#https://mirrors.tuna.tsinghua.edu.cn#g' \
+        -e 's#https://security.ubuntu.com#https://mirrors.tuna.tsinghua.edu.cn#g' \
+        {} + \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        cmake build-essential ffmpeg mecab libmecab-dev mecab-ipadic-utf8 \
+        && rm -rf /var/lib/apt/lists/*
 
 # 4. 依赖（requirements.txt 由克隆的仓库提供）
 RUN pip install -r extra-req.txt --no-deps \
     && pip install -r requirements.txt \
-    && pip install faster-whisper noisereduce fastapi uvicorn python-multipart
+    && pip cache purge
+
+# eunjeon 需要 Ubuntu 系统 g++；Conda GCC 与 Jammy 头文件存在兼容性问题
+RUN PATH="/usr/bin:/bin:/root/conda/bin" /root/conda/bin/pip install \
+    faster-whisper noisereduce eunjeon fastapi uvicorn python-multipart
 
 # 5. 拷贝本仓库工具、训练脚本与 WebUI 启动器
 COPY tools /workspace/tools
 COPY backend /workspace/backend
 COPY scripts /workspace/scripts
-COPY patches /workspace/patches
 COPY assets /workspace/assets
 COPY tools/frontend_only_launcher.py /workspace/frontend_only_launcher.py
 COPY --from=frontend-build /frontend/dist /workspace/frontend/dist

@@ -8,7 +8,7 @@ GuangPu-TTS 一键环境安装（Windows）
     .\setup.ps1 -GPT_SOVITS_ROOT D:\GPT-SoVITS   # 指定 GPT-SoVITS 位置
 
 会自动完成：克隆 GPT-SoVITS -> Python 3.10 venv -> PyTorch CUDA 2.6
--> 依赖 -> 打广普补丁 -> 下载预训练底模 -> Windows 音频修复。
+-> 依赖 -> 注入 V11 回调 -> 下载预训练底模 -> Windows 音频修复。
 #>
 param(
     [string]$GPT_SOVITS_ROOT = "",
@@ -66,18 +66,13 @@ Write-Host "[3/6] 安装 PyTorch 2.6 (CUDA 12.6) ..." -ForegroundColor Cyan
 Write-Host "[4/6] 安装 GPT-SoVITS 依赖 ..." -ForegroundColor Cyan
 & $PythonExe -m pip install -r (Join-Path $GPT_SOVITS_ROOT "extra-req.txt") --no-deps
 & $PythonExe -m pip install -r (Join-Path $GPT_SOVITS_ROOT "requirements.txt")
-& $PythonExe -m pip install faster-whisper noisereduce
+& $PythonExe -m pip install faster-whisper noisereduce eunjeon
 
-# ---------- 5. 打广普补丁 ----------
-Write-Host "[5/6] 应用广普发音补丁 ..." -ForegroundColor Cyan
-Push-Location $GPT_SOVITS_ROOT
-git apply --check (Join-Path $RepoRoot "patches\pinyin.patch") 2>$null
-if ($LASTEXITCODE -eq 0) {
-    git apply (Join-Path $RepoRoot "patches\pinyin.patch")
-} else {
-    Write-Host "git apply 失败（可能已打过补丁），手动检查 patches/README.md" -ForegroundColor Yellow
-}
-Pop-Location
+# ---------- 5. 注入 V11 token 回调 ----------
+Write-Host "[5/6] 注入 V11 语义 token 回调 ..." -ForegroundColor Cyan
+
+& $PythonExe (Join-Path $RepoRoot "tools\gpt_sovits_orb_patch.py") $GPT_SOVITS_ROOT
+if ($LASTEXITCODE -ne 0) { exit 1 }
 
 # Windows torchaudio 修复
 Copy-Item (Join-Path $RepoRoot "scripts\sitecustomize.py") (Join-Path $GPT_SOVITS_ROOT "GPT_SoVITS\sitecustomize.py") -Force
