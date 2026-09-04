@@ -9,6 +9,22 @@ from pathlib import Path
 
 T2S_CALLBACK_READ = 'semantic_token_callback = kwargs.get("semantic_token_callback")'
 T2S_TOKEN_EMIT = "semantic_token_callback(y.shape[1] - prefix_len)"
+T2S_NAIVE_EMIT = """            if idx == 1499:
+                stop = True
+
+            if callable(semantic_token_callback):
+                try:
+                    semantic_token_callback(y.shape[1] - prefix_len)
+                except Exception:
+                    pass
+
+            if stop:
+"""
+T2S_NAIVE_ANCHOR = """            if idx == 1499:
+                stop = True
+
+            if stop:
+"""
 TTS_WRAPPER_READ = 'semantic_token_callback = inputs.get("semantic_token_callback")'
 
 T2S_CHUNK_ANCHOR = 'chunk_split_thershold = kwargs.get("chunk_split_thershold", 0.3)'
@@ -119,6 +135,14 @@ def apply_semantic_token_patches(root: str | Path) -> PatchReport:
             T2S_OUTPUT_ANCHOR,
             f"{T2S_OUTPUT_ANCHOR}{T2S_EMIT_BLOCK}",
             "逐步上报 AR 语义 token",
+            report,
+        )
+    if T2S_NAIVE_EMIT not in t2s:
+        t2s = _replace_once(
+            t2s,
+            T2S_NAIVE_ANCHOR,
+            T2S_NAIVE_EMIT,
+            "逐步上报非并行 AR 语义 token",
             report,
         )
     if t2s != original_t2s:

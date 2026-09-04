@@ -1,0 +1,16 @@
+# Mixed-language listening matrix. Every line contains Chinese plus one other language.
+<en>Project Phoenix</en><zh>今天正式启动。</zh>
+<zh>请把标题改成</zh><en>Project Phoenix</en><zh>，然后再保存。</zh>
+<zh>会议改到</zh><en>three thirty</en><zh>，记得带资料。</zh>
+
+<yue>你好吗？</yue><zh>我们开始今天的会议。</zh>
+<zh>这句话用粤语要说</zh><yue>早晨。</yue>
+<zh>我记得</zh><yue>佢今日喺屋企。</yue>
+
+<ja>こんにちは</ja><zh>，很高兴见到你。</zh>
+<zh>明天记得看</zh><ja>てんきよほう</ja><zh>。</zh>
+<zh>我想学会说</zh><ja>ありがとうございます</ja><zh>。</zh>
+
+<ko>안녕하세요</ko><zh>，我们现在开始。</zh>
+<zh>我要点一份</zh><ko>김치찌개</ko><zh>。</zh>
+<zh>请帮我翻译</zh><ko>감사합니다</ko><zh>。</zh>

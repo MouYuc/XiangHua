@@ -4,6 +4,7 @@ export type Config = {
   gpt_sovits_root: string; gpt_model: string; sovits_model: string; ref_audio: string; ref_text: string
   text_lang: SynthesisLanguage; prompt_lang: SynthesisLanguage
   top_k: number; top_p: number; temperature: number; sample_steps: number; speed: number; pause_second: number
+  mixed_eos_floor: number | null; mixed_token_cap: number | null
   auto_lightmid: boolean; theme: string
   orb_synthesis_token_color: string; orb_settled_color: string; orb_playback_token_color: string
 }

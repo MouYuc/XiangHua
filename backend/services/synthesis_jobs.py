@@ -113,6 +113,11 @@ class SynthesisJobManager:
                     "error": "",
                     "message": f"完成 {result['completed']}/{result['total']}，输出目录：{result['output_dir']}",
                     "ended_at": _now(),
+                    **{
+                        key: result[key]
+                        for key in ("synthesis_mode", "segment_count", "acoustic_inference_calls")
+                        if key in result
+                    },
                 },
             )
 

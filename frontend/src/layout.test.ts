@@ -7,6 +7,8 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import appSource from './App.vue?raw'
 import streamSource from './synthesisStream.ts?raw'
+const apiSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'api.ts'), 'utf8')
+const languageInputSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'components', 'LanguageMarkerInput.vue'), 'utf8')
 
 const stylesSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'styles.css'), 'utf8')
 const dockerSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'Dockerfile'), 'utf8')
@@ -54,6 +56,24 @@ describe('workspace density layout contracts', () => {
     expect(appSource).toContain('sampling-toggle')
     expect(appSource).toContain(":class=\"{ 'is-open': samplingOpen }\"")
     expect(appSource).toContain(':inert="!samplingOpen"')
+  })
+
+  it('exposes optional mixed EOS and token cap controls in sampling parameters', () => {
+    expect(appSource).toContain('config.mixed_eos_floor')
+    expect(appSource).toContain('config.mixed_token_cap')
+    expect(appSource).toContain('混合 EOS 下限')
+    expect(appSource).toContain('混合 Token 上限')
+    expect(appSource).toContain('placeholder="自动"')
+    expect(appSource).toContain('readOptionalNumber')
+    expect(apiSource).toContain('mixed_eos_floor: number | null')
+    expect(apiSource).toContain('mixed_token_cap: number | null')
+  })
+
+  it('keeps an expanded sampling panel scrollable when controls exceed its height', () => {
+    expect(appSource).toContain('class="sampling-controls"')
+    expect(stylesSource).toContain('.sampling-controls {')
+    expect(stylesSource).toContain('overflow-y:auto;')
+    expect(stylesSource).toContain('overscroll-behavior:contain;')
   })
 
   it('places the sampling toggle beside auto conversion in the lyric footer', () => {
@@ -194,10 +214,28 @@ describe('workspace density layout contracts', () => {
     expect(appSource).not.toContain('class="panel voice-panel"')
   })
 
-  it('offers independent text and prompt language controls with reference audio upload', () => {
+  it('replaces the text language selector with explicit language markers', () => {
     expect(appSource).toContain('text_lang')
+    expect(appSource).toContain('placeholder="一行一句，# 注释；可用 <en>Hi</en> 标记语种"')
+    expect(appSource).toContain('<LanguageMarkerInput')
+    expect(appSource).not.toContain('v-model="config.text_lang"')
+    expect(appSource).toContain("config.text_lang = 'zh'")
+  })
+
+  it('indexes supported explicit language markers while typing', () => {
+    expect(languageInputSource).toContain('/<([A-Za-z]*)$/')
+    expect(languageInputSource).toContain('suggestionsOpen')
+    expect(languageInputSource).toContain('selectSuggestion')
+    expect(languageInputSource).toContain('option.value.startsWith(prefix)')
+    expect(languageInputSource).toContain('String(index + 1)')
+    expect(languageInputSource).toContain('suppressNextKeyup')
+    expect(languageInputSource).toContain('@keyup="handleKeyup"')
+    expect(languageInputSource).toContain('isInsideCompleteLanguageTag')
+    expect(languageInputSource).toContain('/^<\\/?(?:zh|yue|en|ja|ko)>$/i')
+  })
+
+  it('offers the prompt language control with reference audio upload', () => {
     expect(appSource).toContain('prompt_lang')
-    expect(appSource).toContain('v-model="config.text_lang"')
     expect(appSource).toContain('v-model="config.prompt_lang"')
     expect(appSource).toContain("'/api/reference-audio'")
     expect(appSource).toContain('uploadReferenceAudio')

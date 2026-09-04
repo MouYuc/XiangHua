@@ -9,6 +9,7 @@ logs_*/
 .superpowers/
 .guangpu_webui/
 GPT-SoVITS/
+GPT_SoVITS/
 .venv/
 AGENTS.md
 docs/superpowers/
@@ -21,3 +22,5 @@ README_preview.html
 backend/tests/test_gpt_sovits_orb_patch.py
 backend/tests/test_synthesis_languages.py
 backend/tests/test_synthesis_orb_events.py
+archive/research/README.md
+docs/RESEARCH_INDEX.md

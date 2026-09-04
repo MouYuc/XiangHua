@@ -74,6 +74,10 @@ Write-Host "[5/6] 注入 V11 语义 token 回调 ..." -ForegroundColor Cyan
 & $PythonExe (Join-Path $RepoRoot "tools\gpt_sovits_orb_patch.py") $GPT_SOVITS_ROOT
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
+Write-Host "注入五语种显式混合补丁 ..." -ForegroundColor Cyan
+& $PythonExe (Join-Path $RepoRoot "tools\gpt_sovits_mixed_language_patch.py") $GPT_SOVITS_ROOT
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
 # Windows torchaudio 修复
 Copy-Item (Join-Path $RepoRoot "scripts\sitecustomize.py") (Join-Path $GPT_SOVITS_ROOT "GPT_SoVITS\sitecustomize.py") -Force
 

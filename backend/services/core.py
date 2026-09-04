@@ -14,11 +14,14 @@ import threading
 import tempfile
 import time
 import uuid
+import zlib
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+import numpy as np
 import soundfile as sf
 
 from tools.env import resolve_default_environment_root
@@ -35,6 +38,7 @@ REFERENCE_AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
 MAX_REFERENCE_AUDIO_BYTES = 100 * 1024 * 1024
 MAX_PATCH_BYTES = 1024 * 1024
 SUPPORTED_SYNTHESIS_LANGUAGES = {"zh", "yue", "en", "ja", "ko"}
+MIXED_LANGUAGE_BOUNDARY_PAUSE_MS = 120
 ORB_COLOR_DEFAULTS = {
     "orb_synthesis_token_color": "#75BBFF",
     "orb_settled_color": "#69DDA4",
@@ -44,6 +48,22 @@ TRAINING_AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
 DOWNLOADABLE_SUFFIXES = TRAINING_AUDIO_SUFFIXES | {".zip"}
 _DOWNLOADS_LOCK = threading.RLock()
 _CONFIG_LOCK = threading.RLock()
+LANGUAGE_TAG_PATTERN = re.compile(r"<(/?)(zh|yue|en|ja|ko)>", re.IGNORECASE)
+UNKNOWN_LANGUAGE_TAG_PATTERN = re.compile(r"</?([A-Za-z]{2,8})>")
+SynthesisSegment = tuple[str, str]
+_CJK_PUNCTUATION_MAP = str.maketrans({
+    "。": ".", "，": ",", "！": "!", "？": "?", "：": ":", "；": ";", "、": ",",
+})
+_MIXED_TERMINAL_PUNCTUATION = "。！？!?；;：:…."
+_ACCEPTABLE_SEGMENT_DURATION_RATIO = 0.80
+
+
+@dataclass(frozen=True)
+class Segment:
+    text: str
+    lang: str
+    pause_after_ms: int = 0
+    source_span: tuple[int, int] | None = None
 
 
 def default_config() -> dict[str, Any]:
@@ -66,6 +86,8 @@ def default_config() -> dict[str, Any]:
         "sample_steps": int(os.environ.get("SAMPLE_STEPS", "64")),
         "speed": float(os.environ.get("SPEED", "1.0")),
         "pause_second": float(os.environ.get("PAUSE_SECOND", "0.15")),
+        "mixed_eos_floor": None,
+        "mixed_token_cap": None,
         "auto_lightmid": os.environ.get("AUTO_LIGHTMID", "1") == "1",
         "theme": os.environ.get("GP_THEME", "auto"),
         **ORB_COLOR_DEFAULTS,
@@ -295,6 +317,325 @@ def render_synthesis_text(text: str, cfg: dict[str, Any]) -> str:
     return to_lightmid(text) if cfg.get("auto_lightmid") and cfg.get("text_lang", "zh") == "zh" else text
 
 
+def parse_language_segments(text: str, default_language: str = "zh") -> list[SynthesisSegment]:
+    """Parse explicit ``<en>...</en>`` markers while treating unmarked text as the default language."""
+    for match in UNKNOWN_LANGUAGE_TAG_PATTERN.finditer(text):
+        if match.group(1).lower() not in SUPPORTED_SYNTHESIS_LANGUAGES:
+            raise ValueError(f"不支持的语言标记：{match.group(0)}。支持：zh、yue、en、ja、ko。")
+
+    segments: list[SynthesisSegment] = []
+    cursor = 0
+    open_language: str | None = None
+
+    for match in LANGUAGE_TAG_PATTERN.finditer(text):
+        closing = bool(match.group(1))
+        language = match.group(2).lower() #把语言标记转换为小写，确保一致性
+        if open_language is None:
+            if closing:
+                raise ValueError(f"显式语言标记不匹配：{match.group(0)}。")
+            before = text[cursor : match.start()].strip()
+            if before:
+                segments.append((default_language, before))
+            open_language = language
+            cursor = match.end()
+            continue
+
+        if not closing:
+            raise ValueError("显式语言标记不能嵌套或交叉。")
+        if language != open_language:
+            raise ValueError(f"显式语言标记不匹配：期望 </{open_language}>，得到 {match.group(0)}。")
+        content = text[cursor : match.start()].strip()
+        if content:
+            segments.append((open_language, content))
+        cursor = match.end()
+        open_language = None
+
+    if open_language is not None:
+        raise ValueError(f"显式语言标记未闭合：<{open_language}> 需要有对应的 </{open_language}>。")
+
+    tail = text[cursor:].strip()
+    if tail:
+        segments.append((default_language, tail))
+    if not segments:
+        if LANGUAGE_TAG_PATTERN.search(text):
+            raise ValueError("显式语言标记内容不能为空。")
+        segments.append((default_language, text.strip()))
+
+    return _merge_fragment_segments(segments)
+
+
+def render_language_segments(segments: list[SynthesisSegment], cfg: dict[str, Any]) -> list[SynthesisSegment]:
+    """Apply language-specific rendering (currently Guangpu conversion) segment by segment."""
+    mixed_language = len({language for language, segment in segments if segment.strip()}) > 1
+    return [
+        (
+            language,
+            render_synthesis_text(
+                segment,
+                {
+                    **cfg,
+                    "text_lang": language,
+                    "auto_lightmid": cfg.get("auto_lightmid") and not mixed_language,
+                },
+            ),
+        )
+        for language, segment in segments
+    ]
+
+
+_WORDLIKE_ENGLISH_ABBREVIATIONS = frozenset({
+    "LASER",
+    "NASA",
+    "NATO",
+    "RADAR",
+    "SCUBA",
+    "SONAR",
+    "UNESCO",
+})
+_DOTTED_INITIALISM_PATTERN = re.compile(r"(?<![A-Za-z])(?:[A-Z]\.){2,}(?![A-Za-z])")
+_SPACED_INITIALISM_PATTERN = re.compile(r"(?<![A-Za-z])(?:[A-Z]\s+){1,}[A-Z](?![A-Za-z])")
+_HYPHENATED_INITIALISM_PATTERN = re.compile(r"(?<![A-Za-z])([A-Z]{2,})-([0-9]+)(?![A-Za-z])")
+_CAPITAL_INITIALISM_PATTERN = re.compile(r"(?<![A-Za-z])([A-Z]{2,})(?![A-Za-z])")
+
+
+def _spell_english_initialism(value: str) -> str:
+    letters = re.findall(r"[A-Z]", value)
+    return " ".join(letters)
+
+
+def english_pronunciation_hint(text: str) -> str:
+    """Build an internal English pronunciation hint without changing surface text."""
+    hinted = re.sub(r"\bwi[\s-]*fi\b", "wifi", text, flags=re.IGNORECASE)
+
+    def replace_initialism(match: re.Match[str]) -> str:
+        value = match.group(0)
+        letters = "".join(re.findall(r"[A-Z]", value))
+        if letters in _WORDLIKE_ENGLISH_ABBREVIATIONS:
+            # GPT-SoVITS splits pure uppercase words before G2P; lowercase
+            # keeps a word-like exception intact in the internal hint.
+            result = value.lower()
+            tail = hinted[match.end() :].lstrip()
+            return result + "," if tail and re.match(r"[A-Za-z0-9]", tail) else result
+        spelled = _spell_english_initialism(value)
+        tail = hinted[match.end() :].lstrip()
+        return spelled + "," if tail and re.match(r"[A-Za-z0-9]", tail) else spelled
+
+    def replace_hyphenated(match: re.Match[str]) -> str:
+        spelled = _spell_english_initialism(match.group(1)) + " " + match.group(2)
+        tail = hinted[match.end() :].lstrip()
+        return spelled + "," if tail and re.match(r"[A-Za-z]", tail) else spelled
+
+    hinted = _DOTTED_INITIALISM_PATTERN.sub(replace_initialism, hinted)
+    hinted = _SPACED_INITIALISM_PATTERN.sub(replace_initialism, hinted)
+    hinted = _HYPHENATED_INITIALISM_PATTERN.sub(replace_hyphenated, hinted)
+    return _CAPITAL_INITIALISM_PATTERN.sub(replace_initialism, hinted)
+
+
+def normalize_english_pronunciations(text: str) -> str:
+    """Backward-compatible name for the internal English pronunciation hint."""
+    return english_pronunciation_hint(text)
+
+
+def normalize_mixed_pronunciation_text(text: str, *, is_final: bool) -> str:
+    """Remove only non-final terminal punctuation from the engine pronunciation text."""
+    if is_final:
+        return text
+    normalized = text.rstrip(_MIXED_TERMINAL_PUNCTUATION).rstrip()
+    return normalized or text
+
+
+def to_engine_segments(
+    segments: list[SynthesisSegment | Segment], *, boundary_pause_ms: int = 0
+) -> list[dict[str, Any]]:
+    """Convert validated application segments into the engine's internal IR."""
+    engine_segments: list[dict[str, Any]] = []
+    non_empty_count = sum(1 for segment in segments if (segment.text if isinstance(segment, Segment) else segment[1]).strip())
+    emitted_count = 0
+    for segment in segments:
+        if isinstance(segment, Segment):
+            language, text = segment.lang, segment.text
+            pause_after_ms = segment.pause_after_ms
+        else:
+            language, text = segment
+            pause_after_ms = 0
+        language = str(language).lower()
+        if language not in SUPPORTED_SYNTHESIS_LANGUAGES:
+            raise ValueError(f"不支持的语言片段：{language}。支持：zh、yue、en、ja、ko。")
+        text = str(text).strip()
+        if text:
+            base_pronunciation_text = (
+                english_pronunciation_hint(text) if language == "en" else text
+            )
+            is_final = emitted_count == non_empty_count - 1
+            pronunciation_text = normalize_mixed_pronunciation_text(
+                base_pronunciation_text,
+                is_final=is_final,
+            )
+            engine_segments.append({
+                "lang": language,
+                "text": text,
+                "pronunciation_text": pronunciation_text,
+                "pause_after_ms": int(pause_after_ms)
+                    if pause_after_ms
+                    else int(boundary_pause_ms) if not is_final else 0,
+            })
+            emitted_count += 1
+    if not engine_segments:
+        raise ValueError("显式语言片段内容不能为空。")
+    return engine_segments
+
+
+def has_pronounceable_text(language: str, text: str) -> bool:
+    """Check for script content that can survive that language's G2P pipeline."""
+    if language == "en":
+        return bool(re.search(r"[A-Za-z0-9]", text))
+    if language == "ja":
+        return bool(re.search(r"[A-Za-z0-9\u3040-\u30ff\u3400-\u9fff\uff66-\uff9d]", text))
+    if language == "ko":
+        return bool(re.search(r"[A-Za-z0-9\uac00-\ud7af]", text))
+    return bool(re.search(r"[A-Za-z0-9\u3400-\u9fff]", text))
+
+
+def _normalize_fragment_punctuation(text: str, language: str) -> str:
+    if language in {"zh", "yue", "ja"}:
+        return text
+    return text.translate(_CJK_PUNCTUATION_MAP)
+
+
+def _merge_fragment_segments(segments: list[SynthesisSegment]) -> list[SynthesisSegment]:
+    """Attach punctuation-only fragments to a neighboring spoken segment.
+
+    GPT-SoVITS returns an empty 16 kHz placeholder for some punctuation-only
+    requests, so those fragments must never be inferred independently.
+    """
+    spoken: list[SynthesisSegment] = []
+    pending_prefix = ""
+
+    for language, segment in segments:
+        if not has_pronounceable_text(language, segment):
+            punctuation = _normalize_fragment_punctuation(segment, language)
+            if spoken:
+                previous_language, previous_text = spoken[-1]
+                normalized = _normalize_fragment_punctuation(punctuation, previous_language)
+                spoken[-1] = (previous_language, previous_text + normalized)
+            else:
+                pending_prefix += punctuation
+            continue
+
+        if pending_prefix:
+            normalized = _normalize_fragment_punctuation(pending_prefix, language)
+            segment = normalized + segment
+            pending_prefix = ""
+        spoken.append((language, segment))
+
+    if pending_prefix and spoken:
+        language, text = spoken[-1]
+        spoken[-1] = (language, text + _normalize_fragment_punctuation(pending_prefix, language))
+    if not spoken:
+        return segments
+    return spoken
+
+
+def deterministic_language_seed(language: str, text: str, cfg: dict[str, Any]) -> int:
+    """Keep repeated short cross-language fragments away from one-off bad samples."""
+    payload = "\0".join((
+        language,
+        text,
+        str(cfg.get("ref_audio", "")),
+        str(cfg.get("ref_text", "")),
+        str(cfg.get("gpt_model", "")),
+        str(cfg.get("sovits_model", "")),
+    ))
+    return zlib.crc32(payload.encode("utf-8")) & 0xFFFFFFFF
+
+
+def expected_segment_duration(text: str, language: str, speed: float) -> float:
+    """Return a conservative floor used only to reject obviously truncated samples."""
+    cjk_units = len(re.findall(r"[\u3400-\u9fff\u3040-\u30ff\uff66-\uff9d\uac00-\ud7af]", text))
+    if language == "en":
+        syllables = sum(
+            max(1, len(re.findall(r"[aeiouy]+", word)))
+            for word in re.findall(r"[A-Za-z]+", text)
+        )
+        return max(.55, .40 * syllables) / max(.1, speed)
+    english_syllables = sum(
+        max(1, len(re.findall(r"[aeiouy]+", word)))
+        for word in re.findall(r"[A-Za-z]+", text)
+    )
+    if language in {"zh", "yue", "ja", "ko", "auto", "auto_yue"}:
+        return max(.55, .18 * cjk_units + .40 * english_syllables) / max(.1, speed)
+    return max(.35, .18 * cjk_units) / max(.1, speed)
+
+
+def trim_segment_edges(audio: Any, sample_rate: int, keep_ms: int = 45, threshold_db: float = -45) -> Any:
+    """Remove accumulated lead-in/tail silence before joining independent clips."""
+    audio = np.asarray(audio)
+    if audio.size == 0:
+        return audio
+
+    reference = float(np.iinfo(audio.dtype).max) if np.issubdtype(audio.dtype, np.integer) else 1.0
+    threshold = reference * 10 ** (threshold_db / 20)
+    frame_size = max(1, int(sample_rate * .01))
+    keep_frame_count = max(1, int(sample_rate * keep_ms / 1000 / frame_size))
+    squares = np.asarray(audio, dtype=np.float64) ** 2
+    frame_count = max(1, (len(audio) + frame_size - 1) // frame_size)
+    padded = np.pad(squares, (0, frame_count * frame_size - len(audio)))
+    frame_energy = padded.reshape(frame_count, frame_size).mean(axis=1)
+    active_frames = np.flatnonzero(frame_energy > threshold * threshold)
+    if not len(active_frames):
+        return audio[: min(len(audio), keep_frame_count * frame_size)]
+
+    start = max(0, (active_frames[0] - keep_frame_count) * frame_size)
+    end = min(len(audio), (active_frames[-1] + keep_frame_count + 1) * frame_size)
+    trimmed = audio[start:end].copy()
+    fade_size = min(len(trimmed) // 2, max(1, int(sample_rate * .008)))
+    if audio.dtype.kind == "f":
+        trimmed[:fade_size] *= np.linspace(0, 1, fade_size, dtype=audio.dtype)
+        trimmed[-fade_size:] *= np.linspace(1, 0, fade_size, dtype=audio.dtype)
+    return trimmed
+
+
+def compose_mixed_language_text(segments: list[SynthesisSegment]) -> str:
+    """Join marked fragments for one upstream mixed-language inference pass."""
+    cleaned = [(language, segment.strip()) for language, segment in segments if segment.strip()]
+    if not cleaned:
+        return ""
+
+    pause_punctuation = set("，。！？；：,.!?;:")
+    parts: list[str] = [cleaned[0][1]]
+    previous_language = cleaned[0][0]
+    for language, segment in cleaned[1:]:
+        if language != previous_language:
+            if previous_language == "en" and segment[0] in {"，", ","}:
+                if parts[-1][-1] not in pause_punctuation:
+                    parts[-1] += ","
+                segment = segment[1:].lstrip()
+            elif segment[0] not in pause_punctuation and parts[-1][-1] not in pause_punctuation:
+                parts[-1] += ","
+        elif language == "en" and not parts[-1].endswith((" ", "\t")):
+            parts[-1] += " "
+        parts.append(segment)
+        previous_language = language
+    return "".join(parts)
+
+
+def validate_synthesis_language_text(text: str, cfg: dict[str, Any]) -> None:
+    """Reject text that a target-language G2P pipeline cannot read instead of emitting silence."""
+    language = cfg.get("text_lang", "zh")
+    lines = parse_lines(text)
+    if not lines:
+        return
+
+    for line in lines:
+        for segment_language, segment in parse_language_segments(line, language):
+            if segment_language == "en" and not re.search(r"[A-Za-z0-9]", segment):
+                raise ValueError("标记为英语的台词没有英文字母。模型不会自动翻译。")
+            if segment_language == "ja" and not re.search(r"[\u3040-\u30ff\uff66-\uff9d]", segment):
+                raise ValueError("标记为日语的台词没有假名。模型不会自动翻译。")
+            if segment_language == "ko" and not re.search(r"[\uac00-\ud7af]", segment):
+                raise ValueError("标记为韩语的台词没有韩文字母。模型不会自动翻译。")
+
+
 def save_reference_audio(filename: str, stream: Any) -> Path:
     """Save an uploaded reference audio stream under a generated managed name."""
     suffix = Path(filename or "").suffix.lower()
@@ -381,6 +722,7 @@ class SynthesisBackend:
         self._root: str | None = None
         self._pipeline: Any = None
         self._loaded: tuple[str | None, str | None] = (None, None)
+        self._inference_calls = threading.local()
         self._warmup = {"status": "idle", "message": "模型尚未预热。", "error": ""}
 
     def warmup_status(self) -> dict[str, str]:
@@ -420,6 +762,14 @@ class SynthesisBackend:
                 engine_path = os.path.join(root, "GPT_SoVITS")
                 if engine_path not in sys.path:
                     sys.path.insert(0, engine_path)
+                # The application also has a top-level ``tools`` package. Add
+                # GPT-SoVITS's sibling modules to that package so imports such
+                # as ``tools.i18n`` resolve without replacing app utilities.
+                project_tools = sys.modules.get("tools")
+                project_tools_path = getattr(project_tools, "__path__", None)
+                engine_tools_path = os.path.join(root, "tools")
+                if project_tools_path is not None and engine_tools_path not in project_tools_path:
+                    project_tools_path.append(engine_tools_path)
                 with backend_cwd(root):
                     module = importlib.import_module("GPT_SoVITS.TTS_infer_pack.TTS")
                     device = "cpu"
@@ -449,12 +799,18 @@ class SynthesisBackend:
                     self._pipeline.init_vits_weights(pair[1])
                 self._loaded = pair
 
-    def synth_one(self, cfg: dict[str, Any], text: str, semantic_token_cb: Any | None = None) -> tuple[Any, int]:
+    def synth_one(
+        self,
+        cfg: dict[str, Any],
+        text: str,
+        semantic_token_cb: Any | None = None,
+        text_segments: list[dict[str, Any]] | None = None,
+    ) -> tuple[Any, int]:
         with self._lock:
             if self._pipeline is None:
                 raise RuntimeError("推理后端未就绪，请先初始化模型。")
             with backend_cwd(str(cfg["gpt_sovits_root"])):
-                result = self._pipeline.run({
+                request = {
                     "text": text,
                     "text_lang": cfg.get("text_lang", "zh"),
                     "ref_audio_path": cfg["ref_audio"],
@@ -468,11 +824,124 @@ class SynthesisBackend:
                     "speed_factor": float(cfg["speed"]),
                     "fragment_interval": float(cfg["pause_second"]),
                     "sample_steps": int(cfg["sample_steps"]),
+                    **({"seed": int(cfg["seed"])} if "seed" in cfg else {}),
                     "parallel_infer": False,
                     "semantic_token_callback": semantic_token_cb,
-                })
+                }
+                if cfg.get("mixed_eos_floor") is not None:
+                    request["mixed_eos_floor"] = max(0, int(cfg["mixed_eos_floor"]))
+                if cfg.get("mixed_token_cap") is not None:
+                    request["mixed_token_cap"] = max(0, int(cfg["mixed_token_cap"]))
+                if text_segments is not None:
+                    request["text_lang"] = "segment_mixed"
+                    request["text_segments"] = text_segments
+                self._inference_calls.count = getattr(self._inference_calls, "count", 0) + 1
+                result = self._pipeline.run(request)
                 last = list(result)[-1]
                 return last[1], last[0]
+
+    def _synthesize_seeded(
+        self,
+        cfg: dict[str, Any],
+        language: str,
+        text: str,
+        semantic_token_cb: Any | None = None,
+        seed: int | None = None,
+    ) -> tuple[Any, int, int, int]:
+        base_seed = deterministic_language_seed(language, text, cfg) if seed is None else seed
+        synthesis_text = english_pronunciation_hint(text) if language == "en" else text
+        expected_duration = expected_segment_duration(synthesis_text, language, float(cfg.get("speed", 1)))
+        attempts: list[tuple[float, Any, int, int]] = []
+
+        for attempt in range(3):
+            attempt_cfg = {
+                **cfg,
+                "text_lang": language,
+                "seed": (base_seed + attempt * 104_729) & 0xFFFFFFFF,
+            }
+            attempt_token_count = 0
+            attempt_frame_rate = 0
+
+            def report_segment_token(token_count: int, frame_rate: int) -> None:
+                nonlocal attempt_token_count, attempt_frame_rate
+                try:
+                    attempt_token_count = max(attempt_token_count, int(token_count))
+                    attempt_frame_rate = max(attempt_frame_rate, int(frame_rate))
+                except (TypeError, ValueError):
+                    return
+
+            audio, sample_rate = self.synth_one(
+                attempt_cfg,
+                synthesis_text,
+                semantic_token_cb=report_segment_token,
+            )
+            sample_rate = int(sample_rate)
+            if sample_rate <= 0:
+                raise ValueError("模型返回了无效采样率。")
+            audio = np.asarray(audio)
+            attempts.append((len(audio) / sample_rate, audio, attempt_token_count, attempt_frame_rate))
+            if attempts[-1][0] >= expected_duration * _ACCEPTABLE_SEGMENT_DURATION_RATIO:
+                break
+
+        acceptable = [item for item in attempts if item[0] >= expected_duration * _ACCEPTABLE_SEGMENT_DURATION_RATIO]
+        if acceptable:
+            _, audio, token_count, frame_rate = acceptable[0]
+        else:
+            _, audio, token_count, frame_rate = max(attempts, key=lambda item: item[0])
+        if callable(semantic_token_cb):
+            semantic_token_cb(token_count, frame_rate)
+        return audio, sample_rate, token_count, frame_rate
+
+    def synth_segments(
+        self,
+        cfg: dict[str, Any],
+        segments: list[tuple[str, str]],
+        semantic_token_cb: Any | None = None,
+    ) -> tuple[Any, int]:
+        """Synthesize marked fragments in one mixed pass when languages differ."""
+        self._inference_calls.count = 0
+        languages = {language for language, _ in segments}
+        if len(segments) > 1 and len(languages) > 1:
+            engine_segments = to_engine_segments(
+                segments, boundary_pause_ms=MIXED_LANGUAGE_BOUNDARY_PAUSE_MS
+            )
+            try:
+                return self.synth_one(
+                    {**cfg, "text_lang": "segment_mixed"},
+                    "",
+                    semantic_token_cb=semantic_token_cb,
+                    text_segments=engine_segments,
+                )
+            finally:
+                if self._inference_calls.count == 0:
+                    self._inference_calls.count = 1
+
+        audio_parts: list[Any] = []
+        sample_rate: int | None = None
+        token_offset = 0
+        line_seed = int(cfg["seed"]) if "seed" in cfg else deterministic_language_seed(
+            "line", " ".join(text for _, text in segments), cfg
+        )
+
+        for language, text in segments:
+            def report_offset_token(token_count: int, frame_rate: int) -> None:
+                if callable(semantic_token_cb):
+                    semantic_token_cb(token_offset + token_count, frame_rate)
+
+            audio, segment_sample_rate, segment_token_count, segment_frame_rate = self._synthesize_seeded(
+                cfg, language, text, report_offset_token, seed=line_seed
+            )
+            audio = trim_segment_edges(audio, segment_sample_rate)
+            if sample_rate is None:
+                sample_rate = segment_sample_rate
+            elif segment_sample_rate != sample_rate:
+                raise RuntimeError("显式语言标记分段返回了不一致的采样率。")
+            audio_parts.append(audio)
+            token_offset += segment_token_count
+
+        if sample_rate is None or not audio_parts:
+            raise ValueError("显式语言标记内容不能为空。")
+        return np.concatenate(audio_parts), sample_rate
 
 
 SYNTHESIS_BACKEND = SynthesisBackend()
@@ -519,6 +988,7 @@ def synthesize_lines(
     lines = parse_lines(text)
     if not lines:
         raise ValueError("台词为空，请先输入内容。")
+    validate_synthesis_language_text(text, cfg)
     SYNTHESIS_BACKEND.ensure(cfg)
     destination = output_dir or new_output_dir()
     outputs: list[dict[str, Any]] = []
@@ -534,8 +1004,17 @@ def synthesize_lines(
         "outputs": [],
         "error": "",
     })
+    total_segment_count = 0
+    total_acoustic_inference_calls = 0
+    used_explicit_mixed = False
     for index, line in enumerate(lines, 1):
-        rendered = render_synthesis_text(line, cfg)
+        rendered_segments = render_language_segments(parse_language_segments(line, cfg.get("text_lang", "zh")), cfg)
+        rendered = " ".join(segment for _, segment in rendered_segments)
+        line_segment_count = len(rendered_segments)
+        line_is_explicit_mixed = line_segment_count > 1 and len({language for language, _ in rendered_segments}) > 1
+        line_synthesis_mode = "single_pass_explicit" if line_is_explicit_mixed else "legacy_single"
+        total_segment_count += line_segment_count
+        used_explicit_mixed = used_explicit_mixed or line_is_explicit_mixed
         base = f"{index:03d}_{safe_name(line)}"
         _emit_progress(progress_cb, {
             "status": "running",
@@ -548,6 +1027,9 @@ def synthesize_lines(
             "output_dir": str(destination),
             "outputs": list(outputs),
             "error": "",
+            "synthesis_mode": line_synthesis_mode,
+            "segment_count": line_segment_count,
+            "acoustic_inference_calls": 0,
         })
         semantic_token_count = 0
         semantic_frame_rate = 0
@@ -575,7 +1057,12 @@ def synthesize_lines(
             )
 
         try:
-            audio, sample_rate = SYNTHESIS_BACKEND.synth_one(cfg, rendered, semantic_token_cb=report_semantic_token)
+            audio, sample_rate = SYNTHESIS_BACKEND.synth_segments(cfg, rendered_segments, semantic_token_cb=report_semantic_token)
+            line_acoustic_inference_calls = max(
+                1 if line_is_explicit_mixed else 0,
+                int(getattr(SYNTHESIS_BACKEND._inference_calls, "count", 0)),
+            )
+            total_acoustic_inference_calls += line_acoustic_inference_calls
             path = save_audio(audio, sample_rate, destination, base)
             outputs.append({
                 "text": line,
@@ -586,6 +1073,9 @@ def synthesize_lines(
                 "output_index": index - 1,
                 "semantic_token_count": semantic_token_count,
                 "semantic_frame_rate": semantic_frame_rate,
+                "synthesis_mode": line_synthesis_mode,
+                "segment_count": line_segment_count,
+                "acoustic_inference_calls": line_acoustic_inference_calls,
             })
             _emit_event(
                 event_cb,
@@ -593,8 +1083,16 @@ def synthesize_lines(
                 output_index=index - 1,
                 semantic_token_count=semantic_token_count,
                 semantic_frame_rate=semantic_frame_rate,
+                synthesis_mode=line_synthesis_mode,
+                segment_count=line_segment_count,
+                acoustic_inference_calls=line_acoustic_inference_calls,
             )
         except Exception as exc:
+            line_acoustic_inference_calls = max(
+                1 if line_is_explicit_mixed else 0,
+                int(getattr(SYNTHESIS_BACKEND._inference_calls, "count", 0)),
+            )
+            total_acoustic_inference_calls += line_acoustic_inference_calls
             error = f"{type(exc).__name__}: {exc}"
             outputs.append({
                 "text": line,
@@ -605,6 +1103,9 @@ def synthesize_lines(
                 "output_index": index - 1,
                 "semantic_token_count": semantic_token_count,
                 "semantic_frame_rate": semantic_frame_rate,
+                "synthesis_mode": line_synthesis_mode,
+                "segment_count": line_segment_count,
+                "acoustic_inference_calls": line_acoustic_inference_calls,
             })
             _emit_event(event_cb, "output_failed", output_index=index - 1, error=error)
         _emit_progress(progress_cb, {
@@ -618,6 +1119,9 @@ def synthesize_lines(
             "output_dir": str(destination),
             "outputs": list(outputs),
             "error": outputs[-1]["error"] if outputs else "",
+            "synthesis_mode": line_synthesis_mode,
+            "segment_count": line_segment_count,
+            "acoustic_inference_calls": line_acoustic_inference_calls,
         })
 
     completed = [item for item in outputs if item["file"]]
@@ -625,7 +1129,15 @@ def synthesize_lines(
         {"time": datetime.now().strftime("%m-%d %H:%M"), "text": item["text"], "params": f"t{cfg['temperature']}/s{cfg['sample_steps']}/text={cfg.get('text_lang', 'zh')}/prompt={cfg.get('prompt_lang', 'zh')}", "name": Path(item["file"]).name, "file": item["file"], "download_id": item["download_id"]}
         for item in completed
     ])
-    result = {"output_dir": str(destination), "total": len(lines), "completed": len(completed), "outputs": outputs}
+    result = {
+        "output_dir": str(destination),
+        "total": len(lines),
+        "completed": len(completed),
+        "outputs": outputs,
+        "synthesis_mode": "single_pass_explicit" if used_explicit_mixed else "legacy_single",
+        "segment_count": total_segment_count,
+        "acoustic_inference_calls": total_acoustic_inference_calls,
+    }
     _emit_progress(progress_cb, {
         "status": "done",
         "phase": "done",
@@ -638,5 +1150,8 @@ def synthesize_lines(
         "output_dir": str(destination),
         "outputs": list(outputs),
         "error": "",
+        "synthesis_mode": result["synthesis_mode"],
+        "segment_count": result["segment_count"],
+        "acoustic_inference_calls": result["acoustic_inference_calls"],
     })
     return result

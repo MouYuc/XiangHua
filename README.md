@@ -24,7 +24,7 @@
   <img src="https://img.shields.io/badge/VRAM-%E2%89%A58GB-8250DF?style=for-the-badge" alt="VRAM ≥ 8GB" />
 </p>
 
-<!-- 以上徽章均为 SVG，由 shields.io 实时生成、自动更新；手动添加教程见 docs/BADGES_GUIDE.md -->
+<!-- 以上徽章均为 SVG，由 shields.io 实时生成、自动更新 -->
 
 ---
 

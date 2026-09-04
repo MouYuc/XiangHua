@@ -11,13 +11,12 @@ services:
     ports:
       - "7860:7860"
     volumes:
-      # 底模（公开）：下载后挂载到 GPT_SoVITS/pretrained_models 与 text/G2PWModel
-      - ./models/pretrained_models:/workspace/GPT-SoVITS/GPT_SoVITS/pretrained_models
-      - ./models/G2PWModel:/workspace/GPT-SoVITS/GPT_SoVITS/text/G2PWModel
-      # 你自己的训练数据与产物（目录名保持和本机 GPT-SoVITS 一致）
-      - ./my_voice/custom_data:/workspace/GPT-SoVITS/custom_data
-      - ./my_voice/GPT_weights_v2Pro:/workspace/GPT-SoVITS/GPT_weights_v2Pro
-      - ./my_voice/SoVITS_weights_v2Pro:/workspace/GPT-SoVITS/SoVITS_weights_v2Pro
+      # 复用本机 GPT-SoVITS 的底模、训练数据与个人训练产物
+      - ./GPT-SoVITS/GPT_SoVITS/pretrained_models:/workspace/GPT-SoVITS/GPT_SoVITS/pretrained_models
+      - ./GPT-SoVITS/GPT_SoVITS/text/G2PWModel:/workspace/GPT-SoVITS/GPT_SoVITS/text/G2PWModel
+      - ./GPT-SoVITS/custom_data:/workspace/GPT-SoVITS/custom_data
+      - ./GPT-SoVITS/GPT_weights_v2Pro:/workspace/GPT-SoVITS/GPT_weights_v2Pro
+      - ./GPT-SoVITS/SoVITS_weights_v2Pro:/workspace/GPT-SoVITS/SoVITS_weights_v2Pro
       # WebUI 配置与历史记录
       - ./.guangpu_webui:/workspace/.guangpu_webui
       # 合成结果（浏览器可直接试听和下载）

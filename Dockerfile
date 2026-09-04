@@ -1,4 +1,3 @@
-# GuangPu-TTS 环境镜像（不含任何声音模型）
 # 基于 GPT-SoVITS 官方 torch-base，构建时克隆引擎并注入 V11 token 回调
 FROM node:24-alpine AS frontend-build
 WORKDIR /frontend
@@ -24,13 +23,6 @@ RUN git clone https://github.com/RVC-Boss/GPT-SoVITS.git /tmp/gs \
     && cp -a /tmp/gs/. . \
     && rm -rf /tmp/gs
 
-# 2. 注入 V11 语义 token 回调；发音补丁由用户运行时导入
-COPY tools/gpt_sovits_orb_patch.py /tmp/gpt_sovits_orb_patch.py
-RUN python /tmp/gpt_sovits_orb_patch.py /workspace/GPT-SoVITS \
-    && grep -q semantic_token_callback GPT_SoVITS/AR/models/t2s_model.py \
-    && grep -q semantic_token_callback GPT_SoVITS/TTS_infer_pack/TTS.py \
-    && rm /tmp/gpt_sovits_orb_patch.py
-
 # 3. 构建工具 + ffmpeg（opencc/pyopenjtalk 等需要编译）
 # 构建网络访问 Ubuntu 官方源不稳定时，切换到国内镜像源
 RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i \
@@ -52,7 +44,20 @@ RUN pip install -r extra-req.txt --no-deps \
 RUN PATH="/usr/bin:/bin:/root/conda/bin" /root/conda/bin/pip install \
     faster-whisper noisereduce eunjeon fastapi uvicorn python-multipart
 
-# 5. 拷贝本仓库工具、训练脚本与 WebUI 启动器
+# 5. 注入 V11 语义 token 回调；发音补丁由用户运行时导入
+COPY tools/gpt_sovits_orb_patch.py /tmp/gpt_sovits_orb_patch.py
+RUN python /tmp/gpt_sovits_orb_patch.py /workspace/GPT-SoVITS \
+    && grep -q semantic_token_callback GPT_SoVITS/AR/models/t2s_model.py \
+    && grep -q semantic_token_callback GPT_SoVITS/TTS_infer_pack/TTS.py \
+    && rm /tmp/gpt_sovits_orb_patch.py
+
+COPY tools/gpt_sovits_mixed_language_patch.py /tmp/gpt_sovits_mixed_language_patch.py
+RUN python /tmp/gpt_sovits_mixed_language_patch.py /workspace/GPT-SoVITS \
+    && grep -q preprocess_segments GPT_SoVITS/TTS_infer_pack/TextPreprocessor.py \
+    && grep -q segment_mixed GPT_SoVITS/TTS_infer_pack/TTS.py \
+    && rm /tmp/gpt_sovits_mixed_language_patch.py
+
+# 6. 拷贝本仓库工具、训练脚本与 WebUI 启动器
 COPY tools /workspace/tools
 COPY backend /workspace/backend
 COPY scripts /workspace/scripts

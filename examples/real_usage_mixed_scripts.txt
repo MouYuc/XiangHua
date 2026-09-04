@@ -1,0 +1,26 @@
+# 五段真实使用测试台词
+# 固定条件：D 组、seed 424242、显式 Segment IR、一次 GPT/SoVITS 推理
+# 试听页：experiments/mixed_language_quality/20260831_424242_real_eos_cap_v1/listening.html
+
+## real_product_demo | 产品介绍
+<zh>今天我们来看看这款新的语音工作台，它可以把一段台词整理成清晰的配音任务。</zh><yue>如果你想快啲开始，直接贴入台词就得喇。</yue><en>Open the voice workspace and choose a scene.</en><ja>画面が整ったら、そのまま確認してみてください。</ja><ko>마지막으로 저장 버튼을 누르면 바로 결과를 들을 수 있습니다.</ko>
+
+## real_city_narration | 城市旁白
+<zh>清晨的海风穿过老街，城市还没有完全醒来，路边的灯光正在一盏一盏熄灭。</zh><yue>街坊慢慢开门，空气入面有阵阵面包香。</yue><en>Beyond the station, the harbor begins to glow.</en><ja>遠くから電車の音が静かに聞こえてきます。</ja><ko>이제 하루가 천천히 시작됩니다.</ko>
+
+## real_software_tutorial | 软件教程
+<zh>先把参考音频放进工作区，再检查文本和语言标签是否一一对应。</zh><yue>跟住撳入预览，听下每个转场位够唔够顺。</yue><en>Select the preview button, then adjust the speaking speed.</en><ja>問題がなければ、最後にファイルを保存します。</ja><ko>오류가 보이면 설정을 바꾸기 전에 먼저 로그를 확인하세요.</ko>
+
+## real_drama_dialogue | 剧情对白
+<zh>雨声压过了窗外的脚步声，他把那封信放在桌上，却没有立刻打开。</zh><yue>你仲唔明咩？我等咗你成晚呀。</yue><en>I thought you would never come back.</en><ja>それでも、ここで待つしかなかった。</ja><ko>이제는 더 이상 숨길 수 없어.</ko>
+
+## real_travel_service | 旅行服务
+<zh>欢迎来到海湾站，请先确认行李和随身物品，再跟着地面的蓝色标线前进。</zh><yue>如果要转车，喺前面个闸口出示张票就可以啦。</yue><en>The next train leaves from platform three in ten minutes.</en><ja>お困りのときは、近くの案内所までお越しください。</ja><ko>즐거운 여행 되시고, 필요한 도움이 있으면 말씀해 주세요.</ko>
+
+## 试听评断模板
+# 每项 1-5 分：5=自然且可直接使用，1=明显不可用
+# real_product_demo: 漏读 __ | 边界清晰度 __ | 切换自然度 __ | 中文音色保持度 __ | 备注：
+# real_city_narration: 漏读 __ | 边界清晰度 __ | 切换自然度 __ | 中文音色保持度 __ | 备注：
+# real_software_tutorial: 漏读 __ | 边界清晰度 __ | 切换自然度 __ | 中文音色保持度 __ | 备注：
+# real_drama_dialogue: 漏读 __ | 边界清晰度 __ | 切换自然度 __ | 中文音色保持度 __ | 备注：
+# real_travel_service: 漏读 __ | 边界清晰度 __ | 切换自然度 __ | 中文音色保持度 __ | 备注：

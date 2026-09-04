@@ -23,6 +23,8 @@ class ConfigUpdate(BaseModel):
     sample_steps: int | None = Field(default=None, ge=1)
     speed: float | None = Field(default=None, gt=0, le=3)
     pause_second: float | None = Field(default=None, ge=0, le=10)
+    mixed_eos_floor: int | None = Field(default=None, ge=0)
+    mixed_token_cap: int | None = Field(default=None, ge=0)
     auto_lightmid: bool | None = None
     theme: str | None = None
     orb_synthesis_token_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")

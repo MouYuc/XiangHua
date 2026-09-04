@@ -49,6 +49,9 @@ echo "[4/6] 安装 GPT-SoVITS 依赖 ..."
 echo "[5/6] 注入 V11 语义 token 回调 ..."
 "$PYBIN" "$REPO_ROOT/tools/gpt_sovits_orb_patch.py" "$GPT_ROOT"
 
+echo "注入五语种显式混合补丁 ..."
+"$PYBIN" "$REPO_ROOT/tools/gpt_sovits_mixed_language_patch.py" "$GPT_ROOT"
+
 # 6. 预训练底模
 echo "[6/6] 下载预训练底模（$SOURCE）..."
 case "$SOURCE" in

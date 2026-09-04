@@ -63,7 +63,12 @@ def _as_url(download_id: str) -> str:
 
 def _merge_config(update: ConfigUpdate) -> dict[str, Any]:
     config = core.load_config()
-    config.update(update.model_dump(exclude_none=True, exclude={"text", "output_dir", "zip_output"}))
+    payload = update.model_dump(exclude_none=True, exclude={"text", "output_dir", "zip_output"})
+    # Optional mixed controls use null as an explicit request to restore dynamic defaults.
+    for field in ("mixed_eos_floor", "mixed_token_cap"):
+        if field in update.model_fields_set:
+            payload[field] = getattr(update, field)
+    config.update(payload)
     return config
 
 
