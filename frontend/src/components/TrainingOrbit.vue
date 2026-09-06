@@ -6,6 +6,7 @@ import { orbitPositions, statusColor } from '../threeScene'
 const props = defineProps<{ steps: Record<string, { title?: string; status?: string }> }>()
 const canvas = ref<HTMLCanvasElement | null>(null)
 const stepKeys = ['slice', 'asr', 'correct', 'feat', 'train']
+const stepNames: Record<string, string> = { slice: '切片', asr: '识别', correct: '校对', feat: '特征', train: '训练' }
 let renderer: THREE.WebGLRenderer | undefined
 let animation = 0
 let resizeObserver: ResizeObserver | undefined
@@ -91,5 +92,5 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="training-orbit-card"><div class="orbit-copy"><span class="orb-eyebrow">TRAINING FLOW</span><strong>训练轨道</strong><small>{{ activeIndex >= 0 ? `步骤 ${activeIndex + 1} / ${stepKeys.length}` : '准备开始' }}</small></div><canvas ref="canvas" aria-label="训练步骤 3D 轨道" role="img"></canvas><div class="orbit-legend"><span v-for="(key, index) in stepKeys" :key="key" :class="props.steps?.[key]?.status || 'pending'"><i></i>{{ props.steps?.[key]?.title || key }}</span></div></div>
+  <div class="training-orbit-card"><div class="orbit-copy"><strong>训练轨道</strong><small>{{ activeIndex >= 0 ? `步骤 ${activeIndex + 1} / ${stepKeys.length}` : '准备开始' }}</small></div><canvas ref="canvas" aria-label="训练步骤 3D 轨道" role="img"></canvas><div class="orbit-legend"><span v-for="(key, index) in stepKeys" :key="key" :class="props.steps?.[key]?.status || 'pending'"><i></i>{{ props.steps?.[key]?.title || stepNames[key] || key }}</span></div></div>
 </template>

@@ -102,7 +102,7 @@ function buildParticles() {
   particles.length = 0
   for (let index = 0; index < 720; index += 1) {
     const sphere = randomSphere()
-    const burst = 1.48 + Math.random() * 1.28
+    const burst = 1.3 + Math.random() * 1.0
     const group = particleGroup(index, props.total)
     particles.push({
       group,
@@ -142,7 +142,7 @@ function project(point: { x: number; y: number; z: number }, spin: number, scale
   const z = point.x * Math.sin(spin) + point.z * Math.cos(spin)
   const depth = 1 / (3.72 - z)
   const size = Math.min(width * .45, height * .87) * scale
-  return { x: width * .5 + x * size * depth, y: height * .57 + point.y * size * depth, z, depth }
+  return { x: width * .5 + x * size * depth, y: height * .5 + point.y * size * depth, z, depth }
 }
 
 function emitWave(group: number, serial: number, source: Wave['source']) {
@@ -264,7 +264,7 @@ function draw(time: number) {
     context.strokeStyle = `rgba(${ringColor[0]}, ${ringColor[1]}, ${ringColor[2]}, .25)`
     context.lineWidth = 1
     context.beginPath()
-    context.arc(width * .5, height * .57, ring, 0, TAU)
+    context.arc(width * .5, height * .5, ring, 0, TAU)
     context.stroke()
   }
   animation = requestAnimationFrame(draw)
