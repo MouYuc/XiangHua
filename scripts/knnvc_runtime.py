@@ -173,7 +173,7 @@ def features_for_waveform(
         piece = waveform[..., start:end]
         if piece.shape[-1] < HOP_LENGTH * 4:
             continue
-        features = model.get_features(piece, vad_trigger_level=vad_trigger_level)
+        features = _encode_chunk(model, piece, vad_trigger_level)
         if features.numel():
             pieces.append(features)
         if progress:
@@ -182,6 +182,24 @@ def features_for_waveform(
     if not pieces:
         raise ValueError("reference audio produced no usable WavLM frames")
     return torch.cat(pieces, dim=0).cpu()
+
+
+def _encode_chunk(model, piece: torch.Tensor, vad_trigger_level: float) -> torch.Tensor:
+    """Encode one window, falling back to no VAD if trimming consumes it.
+
+    ``torchaudio``'s VAD is the SoX algorithm and its own documentation warns it "may
+    be fooled by other things, especially music". On a sung window it can decide the
+    whole window is non-voice and return zero samples, after which the vendored
+    matcher's reverse-trim raises on an empty tensor. That is an edge case in a
+    third-party trimmer, not a reason to fail a conversion: the untrimmed window is
+    encoded instead, which loses the silence-trimming benefit but keeps every frame.
+    """
+    try:
+        return model.get_features(piece, vad_trigger_level=vad_trigger_level)
+    except RuntimeError:
+        if vad_trigger_level <= 0.0:
+            raise
+        return model.get_features(piece, vad_trigger_level=0.0)
 
 
 def build_matching_set(
