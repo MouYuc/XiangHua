@@ -5,12 +5,12 @@ import { createSynthesisStream, shouldApplySynthesisRevision, type SynthesisStre
 import LanguageMarkerInput from './components/LanguageMarkerInput.vue'
 import { FileUp, HelpCircle } from '@lucide/vue'
 const AudioOrb = defineAsyncComponent(() => import('./components/AudioOrb.vue'))
-const TrainingOrbit = defineAsyncComponent(() => import('./components/TrainingOrbit.vue'))
 import IconRail from './components/IconRail.vue'
 import OrbSwallow from './components/OrbSwallow.vue'
+import TimbrePanel from './components/TimbrePanel.vue'
 import { createDraftsStore, type Draft } from './composables/drafts'
 
-type Page = 'synthesis' | 'training' | 'history' | 'settings'
+type Page = 'synthesis' | 'training' | 'history' | 'settings' | 'timbre'
 type EnvRow = { name: string; status: string; detail: string; fix: string }
 type Transcript = { path: string; text: string; audio_url?: string }
 type DebugLog = { time: string; scope: string; message: string }
@@ -40,6 +40,8 @@ const environment = ref<EnvRow[]>([])
 const candidates = ref<{ label: string; path: string }[]>([])
 const history = ref<any[]>([])
 const training = ref<any>({ steps: {} })
+const trainMetrics = ref<any[]>([])
+const trainCheckpoints = ref<any[]>([])
 const stats = ref<any>({})
 const running = ref<any[]>([])
 const logText = ref('（还没有任务，日志将显示在这里）')
@@ -64,10 +66,22 @@ const referenceAudioUploading = ref(false)
 const pronunciationPatchBusy = ref(false)
 const recording = ref<File | null>(null)
 const slice = reactive({ silence_threshold: -35, min_length: 4000, min_gap: 300, keep_silence: 500 })
+const sliceDefaults = reactive({ silence_threshold: -35, min_length: 4000, min_gap: 300, keep_silence: 500 })
+function resetSliceDefaults() {
+  Object.assign(slice, sliceDefaults)
+}
 const whisperModel = ref('large-v3')
 const transcript = ref<Transcript[]>([])
 const experiment = ref('myvoice')
 const epochs = reactive({ s1_epochs: 15, s2_epochs: 12 })
+const SYNTHESIS_ONBOARDING_STORAGE_KEY = 'xianghua.synthesis-onboarded'
+const onboardingAudioName = ref('')
+const onboardingAudioSize = ref('')
+const onboardingSaving = ref(false)
+const synthesisOnboardingOpen = ref(false)
+const synthesisOnboardingStep = ref(1)
+const synthesisOnboarded = ref(readSynthesisOnboardingState())
+const synthesisOnboardingCloseRef = ref<HTMLButtonElement | null>(null)
 let polling: number | undefined
 let synthesisPoller: number | undefined
 let synthesisStream: SynthesisStreamController | null = null
@@ -77,11 +91,117 @@ const SYNTHESIS_POLL_FAILURE_LIMIT = 5
 let synthesisPollFailures = 0
 
 const trainStep = (name: string) => training.value.steps?.[name] || { status: 'pending', title: name }
-const trainingStepLabels: Record<string, string> = { slice: '切片', asr: '识别', correct: '校对', feat: '特征', train: '训练' }
+const trainingStepLabels: Record<string, string> = { slice: '录音切片', asr: 'Whisper 识别', correct: '人工校对', feat: '特征提取', train: '模型训练' }
 const trainingStatusLabels: Record<string, string> = { pending: '未开始', running: '进行中', done: '已完成', fail: '失败' }
 const stepLabel = (key: string) => trainingStepLabels[key] || key
 const statusText = (status: string) => trainingStatusLabels[status] || status
 const trainingProgress = computed(() => Number(trainStep('train').progress?.overall_percent || 0))
+const trainingMetricRows = computed(() => trainMetrics.value)
+const trainingLatestMetric = computed(() => trainingMetricRows.value.at(-1) || {})
+const trainingMetricCards = computed(() => [
+  { label: 'loss_d', value: trainingLatestMetric.value.loss_d },
+  { label: 'loss_g', value: trainingLatestMetric.value.loss_g },
+  { label: 'lr', value: trainingLatestMetric.value.learning_rate },
+])
+const trainingStageRow = computed(() => trainStep('train').progress || {})
+const trainingCheckpointRows = computed(() => trainCheckpoints.value.slice(-4).reverse())
+const trainingLossSeries = computed(() => trainingMetricRows.value
+  .map((row: any) => ({ step: Number(row.step || row.step_idx || 0), loss_d: Number(row.loss_d || 0), loss_g: Number(row.loss_g || 0) }))
+  .filter((row: any) => Number.isFinite(row.step) && Number.isFinite(row.loss_d) && Number.isFinite(row.loss_g) && (row.loss_d > 0 || row.loss_g > 0)))
+const trainingLossPoints = computed(() => {
+  const rows = trainingLossSeries.value
+  if (!rows.length) return []
+  const maxLoss = Math.max(...rows.flatMap((row: any) => [row.loss_d, row.loss_g]), 0.01)
+  const stepRange = Math.max(rows[rows.length - 1].step - rows[0].step, 1)
+  return rows.map((row: any, index: number) => ({
+    x: (row.step - rows[0].step) / stepRange,
+    y: row.loss_d / maxLoss,
+    metric: 'loss_d',
+    title: `step ${row.step} · loss_d ${row.loss_d.toFixed(3)}`,
+  })).concat(rows.map((row: any) => ({
+    x: (row.step - rows[0].step) / stepRange,
+    y: row.loss_g / maxLoss,
+    metric: 'loss_g',
+    title: `step ${row.step} · loss_g ${row.loss_g.toFixed(3)}`,
+  })))
+})
+const trainingLossPath = computed(() => {
+  const metricRows = ['loss_d', 'loss_g'].map((metric) => {
+    const points = trainingLossPoints.value.filter((point: any) => point.metric === metric)
+    if (!points.length) return ''
+    const path = points.map((point: any, index: number) => `${index ? 'L' : 'M'}${Number((point.x * 100).toFixed(2))} ${Number(((1 - point.y) * 100).toFixed(2))}`)
+    return path.join(' ')
+  })
+  return metricRows
+})
+const trainingSampleInterval = ref(1)
+const asrModelCards = [
+  { id: 'large-v3', title: 'large-v3', detail: '最准，碎片/带噪', time: '较慢' },
+  { id: 'medium', title: 'medium', detail: '速度和精度折中', time: '中等' },
+  { id: 'small', title: 'small', detail: '先看流程，速度快', time: '较快' },
+]
+const trainingRunState = computed(() => {
+  const status = trainStep('train').status
+  if (status === 'running') return 'running'
+  if (status === 'done') return 'done'
+  if (status === 'fail') return 'recover'
+  if (status === 'pending' && trainingCheckpointRows.value.length) return 'recover'
+  return 'setup'
+})
+const trainingWorkflow = computed(() => [
+  {
+    key: 'slice',
+    title: '录音切片',
+    action: '选择清晰录音并提交切片',
+    output: '切片音频',
+    unlocked: true,
+    lockReason: '',
+  },
+  {
+    key: 'asr',
+    title: 'Whisper 识别',
+    action: '自动把切片转成文字',
+    output: '识别文本清单',
+    unlocked: Number(stats.value.sliced || 0) > 0 || trainStep('asr').status === 'done',
+    lockReason: '至少需要 1 个切片，先完成第 1 步录音切片。',
+  },
+  {
+    key: 'correct',
+    title: '人工校对',
+    action: '边听切片，修正自动识别的文字',
+    output: '校对清单',
+    unlocked: trainStep('asr').status === 'done' || Number(stats.value.lines || 0) > 0,
+    lockReason: '先完成第 2 步 Whisper 识别。',
+  },
+  {
+    key: 'feat',
+    title: '特征提取',
+    action: '确认实验名并开始提取',
+    output: '训练数据集',
+    unlocked: trainStep('correct').status === 'done',
+    lockReason: '需要先应用广普发音补丁并完成第 3 步人工校对。',
+  },
+  {
+    key: 'train',
+    title: '模型训练',
+    action: '设置轮数并开始训练',
+    output: 'GPT / SoVITS 模型',
+    unlocked: trainStep('feat').status === 'done',
+    lockReason: '训练数据集尚未生成，先完成第 4 步特征提取。',
+  },
+])
+const recommendedTrainingStep = computed(() => {
+  const failed = trainingWorkflow.value.find((step) => trainStep(step.key).status === 'fail')
+  if (failed) return failed.key
+  const firstOpen = trainingWorkflow.value.find((step) => trainStep(step.key).status !== 'done' && step.unlocked)
+  return firstOpen?.key || 'train'
+})
+const activeTrainingStep = computed(() => trainingWorkflow.value.find((step) => step.key === expandedStep.value) || trainingWorkflow.value[0])
+const transcriptStats = computed(() => {
+  const valid = transcript.value.filter((row) => (row.text || '').trim()).length
+  return { total: transcript.value.length, valid, empty: transcript.value.length - valid }
+})
+const experimentReady = computed(() => /^[A-Za-z0-9_-]+$/.test(experiment.value.trim()))
 const orbColors = computed(() => ({
   synthesisToken: config.orb_synthesis_token_color,
   settled: config.orb_settled_color,
@@ -148,6 +268,29 @@ const stageVoiceName = computed(() => {
 const hasSynthResults = computed(() => synthOutputs.value.length > 0)
 const voiceConfigured = computed(() => config.ref_audio.trim().length > 0)
 const showFocusEditorGuide = computed(() => config.theme === 'focus' && synthStage.value === 'idle' && !synthesisText.value.trim())
+const synthesisOnboardingTitle = computed(() => ['', '选择样本', '填写原文', '生成试听'][synthesisOnboardingStep.value] || '')
+const synthesisOnboardingDescription = computed(() => ({
+  1: '选一段清晰人声，推荐 10–30 秒。它决定最终音色。',
+  2: '逐字填写样本里实际说出的内容，这是模型理解样本的关键。',
+  3: '选一句示例台词，在主工作台快速生成第一条试听。',
+})[synthesisOnboardingStep.value] || '')
+const synthesisOnboardingPrimaryLabel = computed(() => ({
+  1: referenceAudioUploading.value ? '上传中…' : '进入填写原文',
+  2: onboardingSaving.value ? '保存中…' : '进入生成试听',
+  3: busy.value ? '生成中…' : '开始生成试听',
+})[synthesisOnboardingStep.value] || '下一步')
+const synthesisOnboardingPrimaryDisabled = computed(() => {
+  if (synthesisOnboardingStep.value === 1) return busy.value || referenceAudioUploading.value || !voiceConfigured.value
+  if (synthesisOnboardingStep.value === 2) return busy.value || onboardingSaving.value || !config.ref_text.trim()
+  return busy.value || !synthesisReady.value || !synthesisText.value.trim()
+})
+const synthesisOnboardingAlert = computed(() => {
+  if (synthesisOnboardingStep.value !== 3 || busy.value || synthesisReady.value) return null
+  return synthesisReadiness.value.status === 'failed'
+    ? synthesisReadiness.value.message
+    : '模型预热中，可先完成样本和原文，稍后再生成。'
+})
+const synthesisVoiceHintVisible = computed(() => synthesisOnboarded.value && !voiceConfigured.value)
 const actionReason = computed(() => {
   if (busy.value) return { text: '正在生成 · 台词已锁定', tone: 'running' }
   if (!voiceConfigured.value) return { text: '音色未配置 · 请上传音色样本', tone: 'warn' }
@@ -193,6 +336,61 @@ const SAMPLE_LINES: { label: string; text: string }[] = [
   { label: '中英混说', text: '欢迎使用 <en>XiangHua</en>，接下来测试一下中英混说的效果。' },
   { label: '粤语问候', text: '<yue>今日天气唔错，一齐试下啦。</yue>' },
 ]
+function readSynthesisOnboardingState() {
+  try {
+    return window.localStorage.getItem(SYNTHESIS_ONBOARDING_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+function writeSynthesisOnboardingState() {
+  synthesisOnboarded.value = true
+  try {
+    window.localStorage.setItem(SYNTHESIS_ONBOARDING_STORAGE_KEY, '1')
+  } catch (error) {
+    console.debug('[onboarding]', error instanceof Error ? error.message : String(error))
+  }
+}
+function formatAudioSize(size: number) {
+  return size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1024))} KB`
+}
+function focusSynthesisOnboardingStep(step: number) {
+  if (step >= 2 && !voiceConfigured.value) return
+  if (step >= 3 && !config.ref_text.trim()) return
+  synthesisOnboardingStep.value = step
+}
+function openSynthesisOnboarding() {
+  if (voiceConfigured.value) {
+    synthesisOnboardingStep.value = config.ref_text.trim() ? 3 : 2
+  } else {
+    synthesisOnboardingStep.value = 1
+  }
+  synthesisOnboardingOpen.value = true
+  void nextTick(() => { synthesisOnboardingCloseRef.value?.focus() })
+}
+function completeSynthesisOnboarding(message: string) {
+  writeSynthesisOnboardingState()
+  synthesisOnboardingOpen.value = false
+  notice.value = message
+}
+function skipSynthesisOnboarding() {
+  completeSynthesisOnboarding('已跳过首次引导。生成前仍需配置音色，可从顶部「引导」重新打开。')
+}
+async function continueOnboardingFromSample() {
+  if (synthesisOnboardingPrimaryDisabled.value) return
+  onboardingSaving.value = true
+  try {
+    await saveConfig()
+    synthesisOnboardingStep.value = 3
+  } finally {
+    onboardingSaving.value = false
+  }
+}
+function startOnboardingTrial() {
+  if (synthesisOnboardingPrimaryDisabled.value) return
+  completeSynthesisOnboarding('已进入主工作台，试听生成会显示在结果里。')
+  synthesize()
+}
 function dismissSynthSummary() {
   synthSummaryDismissed.value = true
 }
@@ -531,7 +729,22 @@ async function refreshOverview() {
 }
 async function refreshHistory() { try { history.value = await api.get<any[]>('/api/history') } catch (error) { showError(error) } }
 async function refreshTraining() {
-  try { const data = await api.get<any>('/api/training/status'); training.value = data.state; stats.value = data.stats; environment.value = data.environment; running.value = data.running; logText.value = data.log.text } catch (error) { showError(error) }
+  try {
+    const data = await api.get<any>('/api/training/status')
+    training.value = data.state
+    stats.value = data.stats
+    environment.value = data.environment
+    running.value = data.running
+    logText.value = data.log.text
+    if (running.value.length || data.last_job_id) {
+      trainMetrics.value = await api.get<any>(`/api/training/metrics?job_id=${running.value[0]?.job_id || data.last_job_id}`).then((r) => r.rows ?? [])
+      trainCheckpoints.value = await api.get<any>('/api/training/checkpoints').then((r) => r.rows ?? [])
+    } else {
+      trainMetrics.value = []
+      trainCheckpoints.value = []
+    }
+    if (typeof data.state?.exp === 'string' && data.state.exp) experiment.value = data.state.exp
+  } catch (error) { showError(error) }
 }
 async function saveConfig() { try { assignConfig(await api.put<Config>('/api/config', config)); notice.value = '已保存为默认配置。' } catch (error) { showError(error) } }
 async function scanEnvironment() { try { const data = await api.post<any>('/api/environment/scan'); assignConfig(data.config); environment.value = data.rows; candidates.value = data.candidates; notice.value = data.selected ? `已选择环境：${data.selected}` : '未找到可用 GPT-SoVITS 环境。' } catch (error) { showError(error) } }
@@ -635,6 +848,8 @@ async function uploadReferenceAudio(event: Event) {
   const audio = input.files?.[0]
   input.value = ''
   if (!audio) return
+  onboardingAudioName.value = audio.name
+  onboardingAudioSize.value = formatAudioSize(audio.size)
   const body = new FormData()
   body.append('audio', audio)
   referenceAudioUploading.value = true
@@ -644,6 +859,8 @@ async function uploadReferenceAudio(event: Event) {
     notice.value = '音色样本已上传。'
   } catch (error) {
     showError(error)
+    onboardingAudioName.value = ''
+    onboardingAudioSize.value = ''
   } finally {
     referenceAudioUploading.value = false
   }
@@ -816,8 +1033,20 @@ async function selectModels() { try { const data = await api.post<any>('/api/tra
 function cycleTheme() { config.theme = config.theme === 'workbench' ? 'focus' : 'workbench'; saveConfig() }
 
 const expandedStep = ref<string | null>('slice')
-function toggleStep(key: string) {
-  expandedStep.value = expandedStep.value === key ? null : key
+function focusTrainingStep(key: string) {
+  expandedStep.value = key
+}
+function stopRunningTraining() {
+  if (running.value.length) stopTraining()
+}
+function trainingFailureAction(key: string) {
+  return {
+    slice: '检查录音格式与切片参数后，重新选择文件提交。',
+    asr: '检查识别依赖或换用 smaller / medium 模型后重试。',
+    correct: '重新加载识别结果，确认没有空文本后保存。',
+    feat: '确认广普补丁和依赖已处理，然后重试提取。',
+    train: '检查特征数据、GPU 显存和训练日志，再重新启动。',
+  }[key] || '查看实时日志后重试。'
 }
 
 onMounted(async () => {
@@ -828,6 +1057,7 @@ onMounted(async () => {
   await refreshSynthesisReadiness()
   if (synthesisReadiness.value.status === 'warming') synthesisReadinessPoller = window.setInterval(() => { void refreshSynthesisReadiness() }, 1000)
   polling = window.setInterval(() => { if (page.value === 'training' || running.value.length) refreshTraining() }, 2500)
+  if (!synthesisOnboarded.value && !voiceConfigured.value) openSynthesisOnboarding()
 })
 
 onBeforeUnmount(() => {
@@ -851,6 +1081,9 @@ onBeforeUnmount(() => {
       <span class="top-bar-spacer" />
       <span class="top-bar-status" :class="statusClass"><i />{{ statusLabel }}</span>
       <div class="top-bar-actions">
+        <button class="icon-btn" title="新手引导" @click="openSynthesisOnboarding">
+          <HelpCircle class="tool-glyph" aria-hidden="true" />
+        </button>
         <button class="icon-btn" title="环境自检" :disabled="doctorBusy" @click="runDoctor(false)">✓</button>
         <button class="icon-btn" title="自动修复" :disabled="doctorBusy" @click="runDoctor(true)">⚡</button>
         <button class="icon-btn" :title="`切换布局 · 当前：${themeLabel}`" @click="cycleTheme">◐</button>
@@ -882,6 +1115,11 @@ onBeforeUnmount(() => {
       <div class="content-area">
       <template v-if="page === 'synthesis'">
         <div class="synthesis-view">
+            <div v-if="synthesisVoiceHintVisible" class="synthesis-voice-hint">
+              <strong>音色样本未配置</strong>
+              <span>生成配音前需要选择样本；可以稍后从顶部「引导」继续。</span>
+              <button class="task-head-action" @click="openSynthesisOnboarding">继续设置</button>
+            </div>
             <div class="editor-main" :data-synth-stage="synthStage">
               <div class="voice-stage">
                 <div
@@ -1135,6 +1373,81 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+            <div v-if="synthesisOnboardingOpen" class="synthesis-onboarding" role="dialog" aria-modal="true" aria-labelledby="synthesis-onboarding-title">
+              <section class="onboarding-card">
+                <header class="onboarding-head">
+                  <div>
+                    <span class="onboarding-eyebrow">首次使用 · {{ synthesisOnboardingStep }} / 3</span>
+                    <h2 id="synthesis-onboarding-title">{{ synthesisOnboardingTitle }}</h2>
+                    <p>{{ synthesisOnboardingDescription }}</p>
+                  </div>
+                  <button ref="synthesisOnboardingCloseRef" class="icon-btn" aria-label="跳过新手引导" @click="skipSynthesisOnboarding()">×</button>
+                </header>
+                <div class="onboarding-body">
+                  <nav class="onboarding-progress" aria-label="引导步骤">
+                    <button
+                      v-for="(step, index) in ['选择样本', '填写原文', '生成试听']"
+                      :key="step"
+                      class="onboarding-step"
+                      :class="{ active: synthesisOnboardingStep === index + 1, complete: synthesisOnboardingStep > index + 1 }"
+                      :aria-current="synthesisOnboardingStep === index + 1 ? 'step' : undefined"
+                      @click="focusSynthesisOnboardingStep(index + 1)"
+                    >
+                      <i>{{ synthesisOnboardingStep > index + 1 ? '✓' : index + 1 }}</i>
+                      <span>{{ step }}</span>
+                    </button>
+                  </nav>
+                  <div class="onboarding-task">
+                    <template v-if="synthesisOnboardingStep === 1">
+                      <div class="onboarding-upload">
+                        <span class="onboarding-upload-icon" aria-hidden="true">+</span>
+                        <div>
+                          <strong>{{ onboardingAudioName || (voiceConfigured ? stageVoiceName : '还没有选择音频') }}</strong>
+                          <small v-if="onboardingAudioSize">{{ onboardingAudioSize }} · 已上传</small>
+                          <small v-else-if="referenceAudioUploading">正在上传…</small>
+                          <small v-else>支持 wav、mp3、m4a、flac、ogg</small>
+                        </div>
+                        <label class="btn-outline onboarding-upload-btn">
+                          {{ referenceAudioUploading ? '上传中…' : '选择音频' }}
+                          <input type="file" accept=".wav,.mp3,.m4a,.flac,.ogg,audio/*" :disabled="referenceAudioUploading || busy" @change="uploadReferenceAudio" />
+                        </label>
+                      </div>
+                    </template>
+                    <template v-else-if="synthesisOnboardingStep === 2">
+                      <label class="onboarding-field">
+                        <span>这段音频说了什么</span>
+                        <textarea v-model="config.ref_text" rows="5" :disabled="busy || onboardingSaving" placeholder="逐字输入样本中的语音内容" />
+                      </label>
+                    </template>
+                    <template v-else>
+                      <div class="onboarding-sample">
+                        <span>示例台词</span>
+                        <div class="onboarding-chips">
+                          <button v-for="sample in SAMPLE_LINES" :key="sample.label" type="button" :class="{ active: synthesisText === sample.text }" @click="applyDraftText(sample.text)">{{ sample.label }}</button>
+                        </div>
+                        <textarea v-model="synthesisText" rows="4" :disabled="busy" placeholder="输入想要快速试听的一句台词" />
+                      </div>
+                      <div v-if="synthesisOnboardingAlert" class="onboarding-alert">{{ synthesisOnboardingAlert }}</div>
+                    </template>
+                  </div>
+                  <aside class="onboarding-guide" aria-label="引导原则">
+                    <strong>引导原则</strong>
+                    <ul>
+                      <li>只保留当前步骤需要的信息。</li>
+                      <li>关闭或跳过入口始终可用。</li>
+                      <li>条件不足时直接说明缺什么。</li>
+                      <li>完成后进入主工作台。</li>
+                    </ul>
+                  </aside>
+                </div>
+                <footer class="onboarding-footer">
+                  <button class="btn-ghost" @click="skipSynthesisOnboarding()">跳过引导</button>
+                  <button class="btn-primary" :disabled="synthesisOnboardingPrimaryDisabled" @click="synthesisOnboardingStep === 2 ? continueOnboardingFromSample() : synthesisOnboardingStep === 3 ? startOnboardingTrial() : focusSynthesisOnboardingStep(2)">
+                    {{ synthesisOnboardingPrimaryLabel }}
+                  </button>
+                </footer>
+              </section>
+            </div>
           </div>
         </div>
       </template>
@@ -1145,113 +1458,284 @@ onBeforeUnmount(() => {
             <h2>训练</h2>
             <p>从录音到专属音色：切片、识别、校对、特征、训练</p>
           </div>
-          <div class="training-header">
-            <div class="training-progress-bar"><span :style="{ width: trainingProgress + '%' }" /></div>
-            <div class="training-progress-label">
-              <strong>{{ trainingProgress }}%</strong>
-              <span>{{ stepLabel('train') }} · {{ statusText(trainStep('train').status) }}</span>
-              <span class="flex-1" />
-              <button class="btn-ghost" @click="refreshTraining">刷新</button>
-            </div>
-          </div>
-          <div class="training-step-pills">
-            <span v-for="key in ['slice', 'asr', 'correct', 'feat', 'train']" :key="key" class="step-pill" :class="trainStep(key).status">{{ stepLabel(key) }}</span>
-          </div>
-
-          <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap">
-            <TrainingOrbit :steps="training.steps || {}" />
-            <div style="flex:1;min-width:240px">
-              <div class="panel-section-title">训练数据</div>
-              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
-                <div><strong style="font-size:18px">{{ stats.sliced ?? '—' }}</strong><br /><small style="color:var(--text-secondary)">切片数</small></div>
-                <div><strong style="font-size:18px">{{ stats.lines ?? '—' }}</strong><br /><small style="color:var(--text-secondary)">标注行数</small></div>
-                <div><strong style="font-size:18px">{{ stats.duration ? (Number(stats.duration) / 60).toFixed(1) + ' 分' : '—' }}</strong><br /><small style="color:var(--text-secondary)">录音总时长</small></div>
+          <div class="training-workbench">
+            <aside class="training-rail" aria-label="训练步骤轨道">
+              <div class="training-rail-head">
+                <span class="panel-section-title">流程位置</span>
+                <button class="btn-ghost" @click="refreshTraining">刷新</button>
               </div>
-            </div>
-            <div style="display:flex;flex-direction:column;gap:6px">
-              <button class="btn-outline" @click="trainingAction('/api/training/patch')">应用补丁</button>
-              <button class="btn-outline" @click="trainingAction('/api/training/dependencies')">安装依赖</button>
-            </div>
-          </div>
-
-          <div v-if="environment.length" class="panel-section">
-            <div class="panel-section-title">训练环境</div>
-            <div class="env-list">
-              <div v-for="row in environment" :key="row.name">
-                <span><i class="status-dot" :class="row.status" />{{ row.name }}</span>
-                <small>{{ row.detail }}</small>
+              <div class="training-rail-progress">
+                <div class="training-progress-bar"><span :style="{ width: trainingProgress + '%' }" /></div>
+                <small>{{ trainingProgress }}% · {{ statusText(trainStep('train').status) }}</small>
               </div>
-            </div>
-          </div>
+              <ol>
+                <li v-for="(step, index) in trainingWorkflow" :key="step.key">
+                  <button class="training-rail-step" :class="[trainStep(step.key).status, { active: expandedStep === step.key, locked: !step.unlocked }]" @click="focusTrainingStep(step.key)">
+                    <span class="training-step-indicator" aria-hidden="true">{{ trainStep(step.key).status === 'done' ? '✓' : trainStep(step.key).status === 'fail' ? '!' : index + 1 }}</span>
+                    <span class="training-rail-copy">
+                      <strong>{{ step.title }}</strong>
+                      <small>{{ step.unlocked ? statusText(trainStep(step.key).status) : '未解锁' }}</small>
+                    </span>
+                  </button>
+                </li>
+              </ol>
+            </aside>
 
-          <div v-for="step in [
-            { key: 'slice', num: '①', title: '录音与切片', status: trainStep('slice').status },
-            { key: 'asr', num: '②', title: 'Whisper 识别', status: trainStep('asr').status },
-            { key: 'correct', num: '③', title: '人工校对', status: trainStep('correct').status },
-            { key: 'feat', num: '④', title: '特征提取', status: trainStep('feat').status },
-            { key: 'train', num: '⑤', title: '模型训练', status: trainStep('train').status },
-          ]" :key="step.key" class="training-step-card" :class="{ active: expandedStep === step.key }">
-            <div class="training-step-head" @click="toggleStep(step.key)">
-              <span class="training-step-num">{{ step.num }}</span>
-              <span class="training-step-title">{{ step.title }}</span>
-              <span class="training-step-status">{{ statusText(step.status) }}</span>
-              <span class="training-step-chevron">▸</span>
-            </div>
-            <div v-if="expandedStep === step.key" class="training-step-body">
-              <template v-if="step.key === 'slice'">
-                <div class="recording-upload-row">
-                  <label class="reference-audio-upload">选择录音文件<input type="file" accept="audio/*" @change="recording = ($event.target as HTMLInputElement).files?.[0] || null" /></label>
-                  <span v-if="recording" class="recording-file-name">{{ recording.name }}</span>
+            <section class="training-panel" aria-labelledby="training-panel-title">
+              <header class="training-panel-head">
+                <div class="training-panel-title">
+                  <span>第 {{ trainingWorkflow.findIndex((step) => step.key === activeTrainingStep.key) + 1 }} / 5 步</span>
+                  <h2 id="training-panel-title">{{ activeTrainingStep.title }}</h2>
+                  <p>{{ activeTrainingStep.action }}</p>
                 </div>
-                <div class="panel-row" style="grid-template-columns:repeat(4,1fr)">
-                  <label class="panel-label">静音阈值<input v-model.number="slice.silence_threshold" type="number" class="panel-input" /></label>
-                  <label class="panel-label">最短段长<input v-model.number="slice.min_length" type="number" class="panel-input" /></label>
-                  <label class="panel-label">最短间隔<input v-model.number="slice.min_gap" type="number" class="panel-input" /></label>
-                  <label class="panel-label">保留静音<input v-model.number="slice.keep_silence" type="number" class="panel-input" /></label>
+                <div class="training-panel-meta">
+                  <div><small>输入</small><span>{{ activeTrainingStep.output === '切片音频' ? '录音文件' : activeTrainingStep.output === '识别文本清单' ? '切片音频' : activeTrainingStep.output === '校对清单' ? '识别文本' : activeTrainingStep.output === '训练数据集' ? '校对清单' : '训练数据集' }}</span></div>
+                  <div><small>产出</small><span>{{ activeTrainingStep.output }}</span></div>
                 </div>
-                <button class="btn-primary" :disabled="busy" @click="startSlice">提交切片</button>
-              </template>
-              <template v-else-if="step.key === 'asr'">
-                <label class="panel-label">识别模型<select v-model="whisperModel" class="panel-input" style="max-width:200px"><option>large-v3</option><option>medium</option><option>small</option></select></label>
-                <button class="btn-primary" :disabled="busy" @click="trainingAction('/api/training/asr', { model: whisperModel })">开始识别</button>
-              </template>
-              <template v-else-if="step.key === 'correct'">
-                <div style="display:flex;gap:6px;flex-wrap:wrap">
-                  <button class="btn-outline" @click="loadTranscript">加载识别结果</button>
-                  <button class="btn-outline" @click="trainingAction('/api/training/transcript/skip')">跳过校对</button>
-                  <button class="btn-primary" :disabled="busy" @click="saveTranscript">保存校对</button>
+              </header>
+              <div class="training-panel-body">
+                <template v-if="activeTrainingStep.key === 'slice'">
+                  <div v-if="!activeTrainingStep.unlocked" class="training-lock-note">{{ activeTrainingStep.lockReason }}</div>
+                  <template v-else>
+                    <div v-if="trainStep('slice').status === 'running'" class="training-status-note">切片进行中，输出见右侧实时日志。</div>
+                    <div v-else-if="trainStep('slice').status === 'fail'" class="training-fail-note">切片失败：{{ trainingFailureAction('slice') }}</div>
+                    <div v-else-if="trainStep('slice').status === 'done'" class="training-output-note">
+                      <span>已生成 {{ Number(stats.sliced || 0) }} 个切片，可进入识别。</span>
+                      <button class="btn-outline" @click="focusTrainingStep('asr')">下一步：识别</button>
+                    </div>
+                    <div class="training-step-card">
+                      <header>
+                        <strong>录音</strong>
+                        <span class="training-step-badge" :class="recording ? 'ready' : 'idle'">{{ recording ? recording.name : '还没选文件' }}</span>
+                      </header>
+                      <div class="recording-upload-row">
+                        <label class="reference-audio-upload">选择录音文件<input type="file" accept="audio/*" @change="recording = ($event.target as HTMLInputElement).files?.[0] || null" /></label>
+                        <span v-if="recording" class="recording-file-name">{{ recording.name }}</span>
+                      </div>
+                    </div>
+                    <div class="training-step-card">
+                      <header>
+                        <strong>切片参数</strong>
+                        <span>先按标准起步，切片不理想再微调。</span>
+                      </header>
+                      <div class="panel-row slice-params">
+                        <label class="panel-label">静音阈值<input v-model.number="slice.silence_threshold" type="number" class="panel-input" /></label>
+                        <label class="panel-label">最短段长<input v-model.number="slice.min_length" type="number" class="panel-input" /></label>
+                        <label class="panel-label">最短间隔<input v-model.number="slice.min_gap" type="number" class="panel-input" /></label>
+                        <label class="panel-label">保留静音<input v-model.number="slice.keep_silence" type="number" class="panel-input" /></label>
+                      </div>
+                      <div class="training-action-row">
+                        <button v-if="trainStep('slice').status !== 'running'" class="btn-primary" :disabled="busy" @click="startSlice">{{ trainStep('slice').status === 'done' ? '重新切片' : '提交切片' }}</button>
+                        <button class="btn-outline" type="button" @click="resetSliceDefaults">恢复默认</button>
+                      </div>
+                      <div class="training-status-note">如果切片过碎，先放宽最短间隔；如果单句被切开，再调小静音阈值。</div>
+                    </div>
+                  </template>
+                </template>
+                <template v-else-if="activeTrainingStep.key === 'asr'">
+                  <div v-if="!activeTrainingStep.unlocked" class="training-lock-note">{{ activeTrainingStep.lockReason }}</div>
+                  <template v-else>
+                    <div class="training-step-card">
+                      <header>
+                        <strong>输入数据</strong>
+                        <span class="training-step-badge" :class="Number(stats.sliced || 0) > 0 ? 'ready' : 'idle'">{{ Number(stats.sliced || 0) }} 个切片</span>
+                      </header>
+                      <p>这一步把切片自动转成文字。选一个平衡档；一次识别后集中校对更省时间。</p>
+                    </div>
+                    <div class="training-step-choice">
+                      <button
+                        v-for="model in asrModelCards"
+                        :key="model.id"
+                        :class="{ active: whisperModel === model.id }"
+                        type="button"
+                        @click="whisperModel = model.id"
+                      >
+                        <span>{{ model.title }}</span>
+                        <small>{{ model.detail }}</small>
+                        <i>{{ model.time }}</i>
+                      </button>
+                    </div>
+                    <div class="training-action-row">
+                      <button v-if="trainStep('asr').status !== 'running'" class="btn-primary" :disabled="busy" @click="trainingAction('/api/training/asr', { model: whisperModel })">{{ trainStep('asr').status === 'done' ? '重新识别' : '开始识别' }}</button>
+                    </div>
+                    <div v-if="trainStep('asr').status === 'running'" class="training-status-note">Whisper 识别进行中，长录音可能需要几分钟。</div>
+                    <div v-else-if="trainStep('asr').status === 'fail'" class="training-fail-note">识别失败：{{ trainingFailureAction('asr') }}</div>
+                    <div v-else-if="trainStep('asr').status === 'done'" class="training-output-note">
+                      <span>已生成 {{ Number(stats.lines || 0) }} 条待校对文本。</span>
+                      <button class="btn-outline" @click="focusTrainingStep('correct')">下一步：校对</button>
+                    </div>
+                  </template>
+                </template>
+                <template v-else-if="activeTrainingStep.key === 'correct'">
+                  <div v-if="!activeTrainingStep.unlocked" class="training-lock-note">{{ activeTrainingStep.lockReason }}</div>
+                  <template v-else>
+                    <div v-if="trainStep('correct').status === 'running'" class="training-status-note">正在保存校对结果…</div>
+                    <div v-else-if="trainStep('correct').status === 'fail'" class="training-fail-note">保存失败：{{ trainingFailureAction('correct') }}</div>
+                    <div v-else-if="trainStep('correct').status === 'done'" class="training-output-note">
+                      <span>校对已保存，共 {{ Number(stats.lines || 0) }} 条文本。</span>
+                      <button class="btn-outline" @click="focusTrainingStep('feat')">下一步：特征提取</button>
+                    </div>
+                    <div class="training-step-card">
+                      <header>
+                        <strong>校对清单</strong>
+                        <span class="training-step-badge" :class="transcriptStats.total ? 'ready' : 'idle'">
+                          {{ transcriptStats.total ? `${transcriptStats.total} 句 · ${transcriptStats.empty} 句空文本` : '还没加载' }}
+                        </span>
+                      </header>
+                      <p>加载后每行左边听音，右边改字。这一步是为了让后面特征提取知道每段音频实际说了什么。</p>
+                    </div>
+                    <div class="training-action-row">
+                      <button class="btn-outline" @click="loadTranscript">加载识别结果</button>
+                      <button class="btn-outline" :disabled="busy" @click="trainingAction('/api/training/transcript/skip')">跳过校对</button>
+                      <button class="btn-primary" :disabled="busy || !transcriptStats.total" @click="saveTranscript">保存校对</button>
+                    </div>
+                    <div v-if="transcript.length" class="transcript-list">
+                      <div v-for="(row, index) in transcript" :key="row.path" class="transcript-row">
+                        <span>{{ index + 1 }}</span>
+                        <audio v-if="row.audio_url" controls :src="row.audio_url" />
+                        <textarea v-model="row.text" />
+                      </div>
+                    </div>
+                    <p v-else class="training-status-note">还没有识别文本，先点击「加载识别结果」。</p>
+                  </template>
+                </template>
+                <template v-else-if="activeTrainingStep.key === 'feat'">
+                  <div v-if="!activeTrainingStep.unlocked" class="training-lock-note">{{ activeTrainingStep.lockReason }}</div>
+                  <template v-else>
+                    <div v-if="trainStep('feat').status === 'running'" class="training-status-note">特征提取进行中，完成后才能开始训练。</div>
+                    <div v-else-if="trainStep('feat').status === 'fail'" class="training-fail-note">提取失败：{{ trainingFailureAction('feat') }}</div>
+                    <div v-else-if="trainStep('feat').status === 'done'" class="training-output-note">
+                      <span>训练数据集已生成，实验名「{{ experiment }}」。</span>
+                      <button class="btn-outline" @click="focusTrainingStep('train')">下一步：训练</button>
+                    </div>
+                    <div class="training-step-card">
+                      <header>
+                        <strong>实验准备</strong>
+                        <span class="training-step-badge" :class="Number(stats.lines || 0) > 0 ? 'ready' : 'idle'">{{ Number(stats.lines || 0) }} 条文本</span>
+                      </header>
+                      <p>实验名会用于模型输出和后续追溯。如果这是正式版本，建议改为有日期的独立名称，避免覆盖旧实验。</p>
+                      <label class="panel-label">实验名<input v-model="experiment" class="panel-input" style="max-width:220px" /></label>
+                      <div class="training-action-row">
+                        <button v-if="trainStep('feat').status !== 'running'" class="btn-primary" :disabled="busy || !experimentReady" @click="trainingAction('/api/training/features', { experiment: experiment.trim() })">{{ trainStep('feat').status === 'done' ? '重新提取' : '开始提取' }}</button>
+                        <span v-if="!experimentReady" class="training-status-note">实验名只能包含字母、数字、下划线或连字符。</span>
+                      </div>
+                    </div>
+                  </template>
+                </template>
+                <template v-else-if="activeTrainingStep.key === 'train'">
+                  <div class="training-observe" aria-label="训练调节台">
+                    <div class="training-observe-status">
+                      <span class="training-observe-chip" :class="trainingRunState">{{ statusText(trainStep('train').status) }}</span>
+                      <span class="training-observe-detail">
+                        <i aria-hidden="true">global_step</i><b>{{ trainingStageRow.global_step || '—' }}</b>
+                        <i>/mini_batch</i><b>{{ trainingStageRow.batch || '—' }}</b>
+                      </span>
+                    </div>
+
+                    <template v-if="trainingRunState === 'setup'">
+                      <div class="training-param-grid">
+                        <label class="panel-label">S1 轮数<input v-model.number="epochs.s1_epochs" type="number" min="1" class="panel-input" /></label>
+                        <label class="panel-label">S2 轮数<input v-model.number="epochs.s2_epochs" type="number" min="1" class="panel-input" /></label>
+                      </div>
+                      <div class="training-param-note">先按当前数据量估一段轮数，训练中可随时改 S2 目标或调低试听频率。</div>
+                      <div class="training-action-row">
+                        <button class="btn-primary" :disabled="busy || !activeTrainingStep.unlocked" @click="trainingAction('/api/training/run', { experiment, ...epochs })">开始训练</button>
+                      </div>
+                    </template>
+
+                    <template v-else-if="trainingRunState === 'recover' || trainingRunState === 'running' || trainingRunState === 'done'">
+                      <div v-if="trainingRunState === 'recover'" class="training-fail-note">
+                        训练已停止或失败：{{ trainingFailureAction('train') }}
+                      </div>
+                      <div v-else-if="trainingRunState === 'done'" class="training-output-note">
+                        训练完成。
+                        <span class="training-output-actions">
+                          <button class="btn-outline" @click="selectModels">查找模型</button>
+                          <button class="btn-outline" @click="page = 'synthesis'">去合成试听</button>
+                        </span>
+                      </div>
+                      <div v-if="trainingRunState === 'running'" class="training-progress-label">
+                        <strong>{{ trainingProgress }}%</strong>
+                        <span>{{ trainingStageRow.stage || '—' }} · {{ trainingStageRow.epoch || '—' }} / {{ trainingStageRow.epochs || '—' }} epoch</span>
+                      </div>
+                      <div class="training-progress-bar"><span :style="{ width: trainingProgress + '%' }" /></div>
+
+                      <div class="training-metric-grid">
+                        <div v-for="metric in trainingMetricCards" :key="metric.label" class="training-metric-card">
+                          <small>{{ metric.label }}</small>
+                          <strong>{{ metric.value ?? '—' }}</strong>
+                        </div>
+                        <div class="training-metric-card">
+                          <small>试听</small>
+                          <strong>{{ trainingStageRow.sample_interval ? `${trainingStageRow.sample_interval}/step` : '待开始' }}</strong>
+                        </div>
+                      </div>
+
+                      <div class="training-loss-chart">
+                        <header><strong>loss_d / loss_g</strong><span>最近 {{ trainingMetricRows.length }} 个记录点</span></header>
+                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="训练 loss 曲线">
+                          <g class="grid"><line x1="0" y1="25" x2="100" y2="25"/><line x1="0" y1="50" x2="100" y2="50"/><line x1="0" y1="75" x2="100" y2="75"/></g>
+                          <path v-for="(path, pathIndex) in trainingLossPath" :key="pathIndex" :d="path" :class="`series-${pathIndex}`" />
+                        </svg>
+                        <div v-if="!trainingLossSeries.length" class="empty-state">训练开始后，这里有 loss 曲线。</div>
+                      </div>
+
+                      <div v-if="trainingRunState !== 'running'" class="training-checkpoint-list">
+                        <div class="panel-section-title">最近 Checkpoint</div>
+                        <div v-for="(row, index) in trainingCheckpointRows" :key="`${row.job_id}-${index}`" class="training-checkpoint-row">
+                          <div>
+                            <strong>{{ row.stage ? `S${row.stage}` : 'CP' }} · {{ row.epoch ?? row.stage_epoch ?? '—' }} epoch</strong>
+                            <small>{{ row.time || '—' }} · {{ row.path || 'checkpoint 文件' }}</small>
+                          </div>
+                          <span class="training-best-tag">{{ trainingCheckpointRows[0] === row ? '最近保存' : '备选' }}</span>
+                        </div>
+                      </div>
+
+                      <div class="training-adjust-grid">
+                        <label class="panel-label">S2 目标轮数<input v-model.number="epochs.s2_epochs" type="number" min="1" class="panel-input" /></label>
+                        <label class="panel-label">试听频率<input v-model.number="trainingSampleInterval" type="number" min="0" step="1" class="panel-input" /></label>
+                      </div>
+                      <div class="training-adjust-note">训练前/后可以改所有轮数；运行中建议只调 S2 目标和试听频率。</div>
+                      <div class="training-action-row">
+                        <button v-if="trainingRunState === 'running'" class="btn-outline" :disabled="busy" @click="stopTraining">停止训练</button>
+                        <button v-if="trainingRunState !== 'running'" class="btn-primary" :disabled="busy || !activeTrainingStep.unlocked" @click="trainingAction('/api/training/run', { experiment, ...epochs })">继续训练</button>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </section>
+
+            <aside class="training-context" aria-label="训练辅助信息">
+              <div class="training-context-block">
+                <div class="panel-section-title">训练数据</div>
+                <div class="training-data-grid">
+                  <div><strong>{{ stats.sliced ?? '—' }}</strong><small>切片数</small></div>
+                  <div><strong>{{ stats.lines ?? '—' }}</strong><small>标注行数</small></div>
+                  <div><strong>{{ stats.duration ? (Number(stats.duration) / 60).toFixed(1) + ' 分' : '—' }}</strong><small>录音总时长</small></div>
                 </div>
-                <div v-if="transcript.length" style="margin-top:10px">
-                  <div v-for="(row, index) in transcript" :key="row.path" class="transcript-row">
-                    <span style="font-size:11px;color:var(--text-placeholder)">{{ index + 1 }}</span>
-                    <audio v-if="row.audio_url" controls :src="row.audio_url" />
-                    <textarea v-model="row.text" />
+              </div>
+              <div v-if="environment.length" class="training-context-block">
+                <div class="panel-section-title">训练环境</div>
+                <div class="env-list">
+                  <div v-for="row in environment" :key="row.name">
+                    <span><i class="status-dot" :class="row.status" />{{ row.name }}</span>
+                    <small>{{ row.detail }}</small>
                   </div>
                 </div>
-              </template>
-              <template v-else-if="step.key === 'feat'">
-                <label class="panel-label">实验名<input v-model="experiment" class="panel-input" style="max-width:200px" /></label>
-                <button class="btn-primary" :disabled="busy" @click="trainingAction('/api/training/features', { experiment })">开始提取</button>
-              </template>
-              <template v-else-if="step.key === 'train'">
-                <div class="panel-row" style="grid-template-columns:repeat(2,1fr);max-width:320px">
-                  <label class="panel-label">S1 轮数<input v-model.number="epochs.s1_epochs" type="number" min="1" class="panel-input" /></label>
-                  <label class="panel-label">S2 轮数<input v-model.number="epochs.s2_epochs" type="number" min="1" class="panel-input" /></label>
+                <div class="training-action-row">
+                  <button class="btn-outline" @click="trainingAction('/api/training/patch')">应用补丁</button>
+                  <button class="btn-outline" @click="trainingAction('/api/training/dependencies')">安装依赖</button>
                 </div>
-                <div style="display:flex;gap:6px">
-                  <button class="btn-primary" :disabled="busy" @click="trainingAction('/api/training/run', { experiment, ...epochs })">开始训练</button>
-                  <button class="btn-outline" @click="selectModels">查找模型</button>
+              </div>
+              <div class="training-context-block training-log-block">
+                <div class="training-log-head">
+                  <span class="panel-section-title">实时日志</span>
+                  <button class="btn-ghost" :disabled="!running.length" @click="stopTraining">停止任务</button>
                 </div>
-              </template>
-            </div>
-          </div>
-
-          <div class="training-log">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
-              <span class="panel-section-title" style="margin-bottom:0">实时日志</span>
-              <button class="btn-ghost" :disabled="!running.length" @click="stopTraining">停止任务</button>
-            </div>
-            <pre>{{ logText }}</pre>
+                <pre>{{ logText }}</pre>
+              </div>
+            </aside>
           </div>
         </div>
       </template>
@@ -1278,6 +1762,10 @@ onBeforeUnmount(() => {
             <a v-if="item.url" :href="item.url" download style="font-size:11px">下载</a>
           </div>
         </div>
+      </template>
+
+      <template v-else-if="page === 'timbre'">
+        <TimbrePanel />
       </template>
 
       <template v-else>

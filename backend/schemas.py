@@ -23,6 +23,8 @@ class ConfigUpdate(BaseModel):
     sample_steps: int | None = Field(default=None, ge=1)
     speed: float | None = Field(default=None, gt=0, le=3)
     pause_second: float | None = Field(default=None, ge=0, le=10)
+    voice_profile_id: str | None = None
+    accent_id: str | None = None
     mixed_eos_floor: int | None = Field(default=None, ge=0)
     mixed_token_cap: int | None = Field(default=None, ge=0)
     auto_lightmid: bool | None = None
@@ -69,6 +71,26 @@ class TrainRequest(FeatureRequest):
 
 class StopRequest(BaseModel):
     job_id: str | None = None
+
+
+class TimbreConvertRequest(BaseModel):
+    """Convert an audio file that is already on disk into a profile's timbre.
+
+    The WebUI uses this to move a synthesis result into the user's own voice
+    without downloading and re-uploading it. Exactly one of ``source_path`` or
+    ``download_id`` has to resolve to a readable file.
+    """
+
+    source_path: str | None = None
+    download_id: str | None = None
+    profile_id: str = "current"
+    topk: int = Field(default=4, ge=1, le=64)
+    device: str | None = None
+
+
+class TimbreProfileRequest(BaseModel):
+    profile_id: str = "current"
+    device: str | None = None
 
 
 class DoctorRequest(BaseModel):

@@ -86,6 +86,8 @@ def default_config() -> dict[str, Any]:
         "sample_steps": int(os.environ.get("SAMPLE_STEPS", "64")),
         "speed": float(os.environ.get("SPEED", "1.0")),
         "pause_second": float(os.environ.get("PAUSE_SECOND", "0.15")),
+        "voice_profile_id": os.environ.get("VOICE_PROFILE_ID", "current"),
+        "accent_id": os.environ.get("ACCENT_ID", "standard"),
         "mixed_eos_floor": None,
         "mixed_token_cap": None,
         "auto_lightmid": os.environ.get("AUTO_LIGHTMID", "1") == "1",

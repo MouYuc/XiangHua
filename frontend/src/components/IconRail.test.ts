@@ -21,11 +21,12 @@ describe('IconRail contract', () => {
 
   it('uses graphical labels without replacing the compact rail', () => {
     expect(railSource).toContain(':class="{ expanded, dragging: resizing }"')
-    expect(railSource).toContain("import {\n  AudioWaveform,\n  BrainCircuit,\n  ChevronLeft,\n  ChevronRight,\n  Clock,\n  SlidersHorizontal,\n} from '@lucide/vue'")
+    expect(railSource).toContain("import {\n  AudioWaveform,\n  BrainCircuit,\n  ChevronLeft,\n  ChevronRight,\n  Clock,\n  MicVocal,\n  SlidersHorizontal,\n} from '@lucide/vue'")
     expect(railSource).toContain('<component :is="item.icon" class="rail-glyph" aria-hidden="true" />')
     expect(railSource).toContain('<span class="rail-label">{{ item.label }}</span>')
     expect(railSource).toContain("{ key: 'synthesis', icon: AudioWaveform, label: '合成' }")
     expect(railSource).toContain("{ key: 'training', icon: BrainCircuit, label: '训练' }")
+    expect(railSource).toContain("{ key: 'timbre', icon: MicVocal, label: '音色' }")
     expect(railSource).toContain("{ key: 'history', icon: Clock, label: '历史' }")
     expect(railSource).toContain("{ key: 'settings', icon: SlidersHorizontal, label: '设置' }")
     expect(railSource).not.toContain('AudioLines')

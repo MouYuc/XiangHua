@@ -7,11 +7,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  MicVocal,
   SlidersHorizontal,
 } from '@lucide/vue'
 import type { LucideIcon } from '@lucide/vue'
 
-type RailPage = 'synthesis' | 'training' | 'history' | 'settings'
+type RailPage = 'synthesis' | 'training' | 'history' | 'settings' | 'timbre'
 
 const RAIL_WIDTH_KEY = 'xianghua.rail-width'
 const DEFAULT_EXPANDED_RAIL_WIDTH = 168
@@ -25,6 +26,7 @@ const emit = defineEmits<{ (event: 'update:page', value: RailPage): void }>()
 const navItems: { key: RailPage; icon: LucideIcon; label: string }[] = [
   { key: 'synthesis', icon: AudioWaveform, label: '合成' },
   { key: 'training', icon: BrainCircuit, label: '训练' },
+  { key: 'timbre', icon: MicVocal, label: '音色' },
   { key: 'history', icon: Clock, label: '历史' },
   { key: 'settings', icon: SlidersHorizontal, label: '设置' },
 ]

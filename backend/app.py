@@ -23,12 +23,16 @@ from backend.schemas import (
     ModelRunRequest,
     StopRequest,
     SynthesisRequest,
+    TimbreConvertRequest,
+    TimbreProfileRequest,
     TrainRequest,
     TranscriptUpdate,
 )
-from backend.services import core
+from backend.services import core, timbre
 from backend.services.doctor import run_doctor
 from backend.services.synthesis_jobs import SYNTHESIS_JOBS
+from backend.services.timbre import TIMBRE_BACKEND
+from backend.services.voice_selection import apply_voice_selection, list_voice_options
 from tools.env import derive_environment_config, scan_gpt_sovits_roots
 from tools.train import (
     ST_DONE,
@@ -40,6 +44,8 @@ from tools.train import (
     find_models,
     job_log_path,
     last_job_id,
+    list_checkpoint_entries,
+    list_metrics,
     load_state as load_train_state,
     mark_step,
     missing_deps,
@@ -102,6 +108,23 @@ def _public_synthesis_event(event: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _public_timbre_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Attach a playable URL to a finished conversion result.
+
+    The result file lives under ``output/vc/webui``; registering it as a download
+    is what lets the browser play it without exposing the filesystem path.
+    """
+    data = dict(snapshot or {})
+    result = data.get("result")
+    if isinstance(result, dict) and result.get("file"):
+        row = dict(result)
+        path = Path(str(row["file"]))
+        row.pop("file", None)
+        row["url"] = _as_url(core.register_download(path)) if path.is_file() else ""
+        data["result"] = row
+    return data
+
+
 def _current_log(job_id: str | None = None) -> dict[str, str]:
     job_id = job_id or last_job_id()
     if not job_id:
@@ -155,6 +178,10 @@ def create_app() -> FastAPI:
     @app.put("/api/config")
     def update_config(request: ConfigUpdate) -> dict[str, Any]:
         return core.save_config(_merge_config(request))
+
+    @app.get("/api/voice/options")
+    def voice_options() -> dict[str, Any]:
+        return list_voice_options(core.load_config())
 
 
     @app.get("/api/overview")
@@ -228,7 +255,15 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=readiness["message"])
         config = _merge_config(request)
         try:
-            return _public_synthesis_snapshot(SYNTHESIS_JOBS.start(config, request.text))
+            prepared = apply_voice_selection(
+                config,
+                request.text,
+                request.voice_profile_id,
+                request.accent_id,
+            )
+            return _public_synthesis_snapshot(
+                SYNTHESIS_JOBS.start(prepared.config, prepared.text)
+            )
         except (RuntimeError, ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -253,6 +288,85 @@ def create_app() -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+
+    @app.get("/api/timbre/profile")
+    def timbre_profile(profile_id: str = Query(default="current")) -> dict[str, Any]:
+        """Report a voice profile's reference corpus, cache state and VRAM."""
+        return TIMBRE_BACKEND.profile_status(profile_id, core.load_config())
+
+    @app.post("/api/timbre/profile/build")
+    def timbre_profile_build(request: TimbreProfileRequest) -> dict[str, Any]:
+        """Encode a profile's reference audio into a cached kNN matching pool."""
+        config = core.load_config()
+        try:
+            return _public_timbre_snapshot(
+                TIMBRE_BACKEND.start_profile_build(request.profile_id, config, device=request.device)
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/timbre/sources")
+    def timbre_sources(limit: int = Query(default=30, ge=1, le=200)) -> dict[str, Any]:
+        """List audio the user can convert: synthesis history plus past uploads."""
+        return {"rows": timbre.list_sources(limit)}
+
+    @app.post("/api/timbre/convert")
+    async def timbre_convert_upload(
+        audio: UploadFile = File(...),
+        topk: int = Form(4),
+        profile_id: str = Form("current"),
+        device: str | None = Form(None),
+    ) -> dict[str, Any]:
+        """Convert an uploaded recording (speech or singing) into a profile's voice."""
+        if topk < 1:
+            raise HTTPException(status_code=400, detail="topk 必须 >= 1。")
+        try:
+            source = timbre.save_source(audio.filename or "source.wav", audio.file)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="源音频保存失败。") from exc
+        config = core.load_config()
+        return _public_timbre_snapshot(
+            TIMBRE_BACKEND.start_conversion(source, profile_id, config, topk=topk, device=device)
+        )
+
+    @app.post("/api/timbre/convert-file")
+    def timbre_convert_file(request: TimbreConvertRequest) -> dict[str, Any]:
+        """Convert a file already on disk, e.g. a synthesis result just produced."""
+        source: Path | None = None
+        if request.download_id:
+            source = core.resolve_download(request.download_id)
+        if source is None and request.source_path:
+            candidate = Path(request.source_path).expanduser()
+            source = candidate if candidate.is_file() else None
+        if source is None or not source.is_file():
+            raise HTTPException(status_code=404, detail="找不到要转换的源音频。")
+        config = core.load_config()
+        try:
+            return _public_timbre_snapshot(
+                TIMBRE_BACKEND.start_conversion(
+                    source, request.profile_id, config, topk=request.topk, device=request.device
+                )
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/timbre/status/{job_id}")
+    def timbre_status(job_id: str) -> dict[str, Any]:
+        snapshot = TIMBRE_BACKEND.snapshot(job_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="音色任务不存在。")
+        return _public_timbre_snapshot(snapshot)
+
+    @app.get("/api/timbre/jobs")
+    def timbre_jobs(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+        return {"rows": [_public_timbre_snapshot(row) for row in TIMBRE_BACKEND.list_jobs(limit)]}
+
+    @app.post("/api/timbre/unload")
+    def timbre_unload() -> dict[str, Any]:
+        """Release the encoder so synthesis can reclaim the GPU."""
+        return TIMBRE_BACKEND.unload()
 
     @app.get("/api/history")
     def history() -> list[dict[str, Any]]:
@@ -281,7 +395,18 @@ def create_app() -> FastAPI:
     @app.get("/api/training/status")
     def training_status() -> dict[str, Any]:
         config = core.load_config()
-        return {"state": load_train_state(), "environment": train_env_rows(config), "stats": core.training_stats(config), "running": running_jobs(), "log": _current_log()}
+        return {"state": load_train_state(), "environment": train_env_rows(config), "stats": core.training_stats(config), "running": running_jobs(), "log": _current_log(), "last_job_id": last_job_id()}
+
+    @app.get("/api/training/metrics")
+    def training_metrics(job_id: str | None = None) -> dict[str, Any]:
+        job_id = job_id or last_job_id()
+        if not job_id:
+            raise HTTPException(status_code=400, detail="还没有训练任务记录。")
+        return {"rows": list_metrics(job_id)}
+
+    @app.get("/api/training/checkpoints")
+    def training_checkpoints() -> dict[str, Any]:
+        return {"rows": list_checkpoint_entries()}
 
     @app.post("/api/training/dependencies")
     def install_dependencies() -> dict[str, Any]:
