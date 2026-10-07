@@ -56,6 +56,12 @@ _CJK_PUNCTUATION_MAP = str.maketrans({
 })
 _MIXED_TERMINAL_PUNCTUATION = "。！？!?；;：:…."
 _ACCEPTABLE_SEGMENT_DURATION_RATIO = 0.80
+# Below this share of the duration the text needs, the take was not really synthesised
+# and the user has to be told. Deliberately far below _ACCEPTABLE_SEGMENT_DURATION_RATIO:
+# that one drives the retry loop (a merely hasty take should be retried), while this one
+# flags a delivery that is broken rather than quick. Measured failure case: 0.08 s
+# against an expected 2.6 s, i.e. 3%.
+SHORT_OUTPUT_RATIO = 0.25
 
 
 @dataclass(frozen=True)
@@ -1066,6 +1072,16 @@ def synthesize_lines(
             )
             total_acoustic_inference_calls += line_acoustic_inference_calls
             path = save_audio(audio, sample_rate, destination, base)
+            # A take this far short of what the text needs was not really synthesised.
+            # The engine still "succeeds": measured on this model, untagged Korean
+            # produced 0.08 s of near-silence while the same sentence with an explicit
+            # ``<ko>`` tag produced 2.50 s. Without this flag the WebUI reported success
+            # and offered a 4 KB file for download.
+            produced_seconds = len(np.asarray(audio)) / float(sample_rate or 1)
+            expected_seconds = expected_segment_duration(rendered or line, "zh", float(cfg.get("speed", 1)))
+            suspiciously_short = bool(
+                produced_seconds < max(0.6, expected_seconds * SHORT_OUTPUT_RATIO)
+            )
             outputs.append({
                 "text": line,
                 "rendered_text": rendered,
@@ -1078,6 +1094,17 @@ def synthesize_lines(
                 "synthesis_mode": line_synthesis_mode,
                 "segment_count": line_segment_count,
                 "acoustic_inference_calls": line_acoustic_inference_calls,
+                "duration": round(produced_seconds, 3),
+                "expected_duration": round(expected_seconds, 3),
+                "suspiciously_short": suspiciously_short,
+                "warning": (
+                    f"生成音频只有 {produced_seconds:.2f}s，远短于这段文本应有的 "
+                    f"{expected_seconds:.2f}s，很可能没有真正合成出来。"
+                    "常见原因：非中文台词没有加语言标签（未标记文本按页面默认语言合成），"
+                    "或该语言的训练数据不足。请在文本里用 <zh>/<yue>/<en>/<ja>/<ko> 明确标注语种。"
+                    if suspiciously_short
+                    else ""
+                ),
             })
             _emit_event(
                 event_cb,
