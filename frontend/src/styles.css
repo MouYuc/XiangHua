@@ -2596,6 +2596,90 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .onboarding-footer .btn-primary { flex: 1 1 auto; }
 }
 
+/* ─── Reference-audio quality gate (deterministic DSP report) ──── */
+
+.ref-check {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.ref-check.ok { border-color: var(--accent-border); background: var(--accent-soft); }
+.ref-check.warn { border-color: var(--warn); background: var(--warn-soft); }
+.ref-check.fail { border-color: var(--danger); background: var(--danger-soft); }
+
+.ref-check-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.ref-check-title { font-size: 12px; }
+.ref-check-summary { margin: 2px 0 0; font-size: 11.5px; color: var(--text-secondary); }
+.ref-check.ok .ref-check-summary { color: var(--text); }
+.ref-check.warn .ref-check-summary { color: var(--warn); }
+.ref-check.fail .ref-check-summary { color: var(--danger); }
+
+.ref-check-glyph { flex-shrink: 0; width: 14px; height: 14px; margin-top: 1px; }
+.ref-check.ok .ref-check-glyph { color: var(--accent); }
+.ref-check.warn .ref-check-glyph { color: var(--warn); }
+.ref-check.fail .ref-check-glyph { color: var(--danger); }
+
+.ref-check-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.ref-check-list li { display: flex; align-items: flex-start; gap: 7px; }
+.ref-check-list li.warn .ref-check-glyph { color: var(--warn); }
+.ref-check-list li.fail .ref-check-glyph { color: var(--danger); }
+
+.ref-check-list strong { display: block; font-size: 11.5px; }
+.ref-check-list span { display: block; font-size: 11.5px; color: var(--text-secondary); }
+.ref-check-list small {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-placeholder);
+  font-variant-numeric: tabular-nums;
+}
+
+.ref-check-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 6px 12px;
+}
+
+.ref-check-metrics > div { display: grid; gap: 1px; min-width: 0; }
+.ref-check-metrics span { font-size: 10px; color: var(--text-secondary); }
+.ref-check-metrics strong {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.ref-check-worst {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.ref-check-worst code { font-size: 10.5px; }
+
+.ref-check-passed { font-size: 11px; color: var(--text-secondary); }
+.ref-check-passed summary { cursor: pointer; }
+.ref-check-passed ul { display: grid; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+.ref-check-passed li { display: flex; align-items: flex-start; gap: 6px; }
+.ref-check-passed .ref-check-glyph { color: var(--accent); }
+
+.ref-check-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-placeholder);
+}
+.ref-check-note .tool-glyph { flex-shrink: 0; margin-top: 1px; }
+
 /* ─── Timbre view (personal kNN-VC voice conversion) ───────────── */
 
 .timbre-view {

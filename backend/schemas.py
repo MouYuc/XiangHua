@@ -93,5 +93,19 @@ class TimbreProfileRequest(BaseModel):
     device: str | None = None
 
 
+class ReferenceAudioRequest(BaseModel):
+    """Grade a reference clip, or a whole reference directory, before synthesis.
+
+    ``directory`` exists because the two consumers judge different units: a
+    synthesis prompt is one file, while a kNN-VC matching pool is the whole corpus,
+    and 64 two-second slices each fail a per-file minimum that the corpus as a whole
+    passes comfortably.
+    """
+
+    path: str | None = None
+    directory: str | None = None
+    purpose: str = "synthesis"
+
+
 class DoctorRequest(BaseModel):
     repair: bool = False

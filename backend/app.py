@@ -21,6 +21,7 @@ from backend.schemas import (
     EnvironmentSelectRequest,
     FeatureRequest,
     ModelRunRequest,
+    ReferenceAudioRequest,
     StopRequest,
     SynthesisRequest,
     TimbreConvertRequest,
@@ -28,7 +29,7 @@ from backend.schemas import (
     TrainRequest,
     TranscriptUpdate,
 )
-from backend.services import core, timbre
+from backend.services import core, reference_audio, timbre
 from backend.services.doctor import run_doctor
 from backend.services.synthesis_jobs import SYNTHESIS_JOBS
 from backend.services.timbre import TIMBRE_BACKEND
@@ -226,14 +227,53 @@ def create_app() -> FastAPI:
         return run_doctor(repair=request.repair)
 
     @app.post("/api/reference-audio")
-    def upload_reference_audio(audio: UploadFile = File(...)) -> dict[str, str]:
+    def upload_reference_audio(
+        audio: UploadFile = File(...),
+        purpose: str = Form("synthesis"),
+    ) -> dict[str, Any]:
+        """Save a reference clip and grade it before the user commits to it.
+
+        The report is returned with the path rather than replacing it: a clip that
+        fails the gate is still saved, and the caller decides. That ordering matters
+        because the settings page has to show the user *why* a recording is unusable
+        while they still have the file in front of them.
+        """
         try:
             path = core.save_reference_audio(audio.filename or "", audio.file)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail="参考音频保存失败。") from exc
-        return {"path": str(path)}
+        try:
+            report = reference_audio.judge(path, purpose)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            # A gate that cannot read the file must not discard a saved upload.
+            report = {"status": "unknown", "error": f"{type(exc).__name__}: {exc}"}
+        return {"path": str(path), "report": report}
+
+    @app.post("/api/reference-audio/inspect")
+    def inspect_reference_audio(request: ReferenceAudioRequest) -> dict[str, Any]:
+        """Grade a clip that is already on disk, or a whole corpus directory."""
+        try:
+            if request.directory:
+                paths = reference_audio.collect_audio(Path(request.directory))
+                if not paths:
+                    raise HTTPException(status_code=404, detail="该目录里没有音频文件。")
+                return {"kind": "corpus", "report": reference_audio.analyze_corpus(paths, request.purpose)}
+            if not request.path:
+                raise HTTPException(status_code=400, detail="请提供 path 或 directory。")
+            candidate = Path(request.path).expanduser()
+            if not candidate.is_file():
+                raise HTTPException(status_code=404, detail="找不到要检查的音频。")
+            return {"kind": "file", "report": reference_audio.judge(candidate, request.purpose)}
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"检查失败：{exc}") from exc
 
     @app.post("/api/engine/pronunciation-patch")
     def import_pronunciation_patch(patch: UploadFile = File(...)) -> dict[str, str]:

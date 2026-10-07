@@ -8,7 +8,9 @@ const AudioOrb = defineAsyncComponent(() => import('./components/AudioOrb.vue'))
 import IconRail from './components/IconRail.vue'
 import OrbSwallow from './components/OrbSwallow.vue'
 import TimbrePanel from './components/TimbrePanel.vue'
+import ReferenceAudioReport from './components/ReferenceAudioReport.vue'
 import { createDraftsStore, type Draft } from './composables/drafts'
+import { isReferenceBlocking, REFERENCE_PURPOSES, type ReferenceReport } from './composables/referenceAudio'
 
 type Page = 'synthesis' | 'training' | 'history' | 'settings' | 'timbre'
 type EnvRow = { name: string; status: string; detail: string; fix: string }
@@ -63,6 +65,10 @@ const orbPlayback = ref<OrbPlayback | null>(null)
 const batchFileName = ref('')
 const batchLineCount = ref(0)
 const referenceAudioUploading = ref(false)
+const referenceChecking = ref(false)
+const referenceReport = ref<ReferenceReport | null>(null)
+/** 门禁的判据随用途变化：几秒的提示音和成分钟的匹配池不是一回事。 */
+const referencePurpose = ref('synthesis')
 const pronunciationPatchBusy = ref(false)
 const recording = ref<File | null>(null)
 const slice = reactive({ silence_threshold: -35, min_length: 4000, min_gap: 300, keep_silence: 500 })
@@ -852,17 +858,47 @@ async function uploadReferenceAudio(event: Event) {
   onboardingAudioSize.value = formatAudioSize(audio.size)
   const body = new FormData()
   body.append('audio', audio)
+  body.append('purpose', referencePurpose.value)
   referenceAudioUploading.value = true
   try {
-    const result = await api.post<{ path: string }>('/api/reference-audio', body)
+    const result = await api.post<{ path: string; report: ReferenceReport }>('/api/reference-audio', body)
     config.ref_audio = result.path
-    notice.value = '音色样本已上传。'
+    referenceReport.value = result.report
+    // 不合格必须说清楚，但仍然保存：用户要能看着报告决定重录还是继续。
+    notice.value = isReferenceBlocking(result.report)
+      ? '音色样本已上传，但质量门禁判定为不可用，请看下方原因。'
+      : '音色样本已上传。'
   } catch (error) {
     showError(error)
     onboardingAudioName.value = ''
     onboardingAudioSize.value = ''
   } finally {
     referenceAudioUploading.value = false
+  }
+}
+
+/** 检查当前填写的音频路径；目录按语料整体判，单个文件按文件判。 */
+async function inspectReferenceAudio() {
+  const target = String(config.ref_audio || '').trim()
+  if (!target) {
+    showError('请先填写或上传参考音频。')
+    return
+  }
+  referenceChecking.value = true
+  referenceReport.value = null
+  try {
+    const body: Record<string, string> = { purpose: referencePurpose.value }
+    if (/[\\/]$/.test(target)) body.directory = target
+    else body.path = target
+    const result = await api.post<{ kind: string; report: ReferenceReport }>(
+      '/api/reference-audio/inspect',
+      body,
+    )
+    referenceReport.value = result.report
+  } catch (error) {
+    showError(error)
+  } finally {
+    referenceChecking.value = false
   }
 }
 
@@ -1272,7 +1308,13 @@ onBeforeUnmount(() => {
                   <div class="reference-audio-row">
                     <input id="reference-path-input" v-model="config.ref_audio" class="panel-input" :disabled="busy" />
                     <label class="reference-audio-upload">{{ referenceAudioUploading ? '上传中…' : '上传音频' }}<input type="file" accept=".wav,.mp3,.m4a,.flac,.ogg,audio/*" :disabled="referenceAudioUploading || busy" @change="uploadReferenceAudio" /></label>
+                    <button class="btn-outline" :disabled="referenceChecking || busy" @click="inspectReferenceAudio">{{ referenceChecking ? '检查中…' : '质量检查' }}</button>
                   </div>
+                  <label class="panel-label" for="reference-purpose-input">这段音频用来做什么</label>
+                  <select id="reference-purpose-input" v-model="referencePurpose" class="panel-input" :disabled="busy">
+                    <option v-for="option in REFERENCE_PURPOSES" :key="option.value" :value="option.value">{{ option.label }} · {{ option.hint }}</option>
+                  </select>
+                  <ReferenceAudioReport :report="referenceReport" :busy="referenceChecking" />
                   <label class="panel-label" for="reference-text-input">这段音频说了什么</label>
                   <textarea id="reference-text-input" v-model="config.ref_text" class="panel-input" rows="3" :disabled="busy" />
                   <label class="panel-label" for="reference-language-input">音频语言</label>
@@ -1789,8 +1831,15 @@ onBeforeUnmount(() => {
                 <div class="reference-audio-row">
                   <input v-model="config.ref_audio" class="panel-input" />
                   <label class="reference-audio-upload">{{ referenceAudioUploading ? '上传中…' : '上传' }}<input type="file" accept=".wav,.mp3,.m4a,.flac,.ogg,audio/*" :disabled="referenceAudioUploading" @change="uploadReferenceAudio" /></label>
+                  <button class="btn-outline" :disabled="referenceChecking" @click="inspectReferenceAudio">{{ referenceChecking ? '检查中…' : '质量检查' }}</button>
                 </div>
               </label>
+              <label class="settings-field">用途
+                <select v-model="referencePurpose" class="panel-input">
+                  <option v-for="option in REFERENCE_PURPOSES" :key="option.value" :value="option.value">{{ option.label }} · {{ option.hint }}</option>
+                </select>
+              </label>
+              <ReferenceAudioReport :report="referenceReport" :busy="referenceChecking" />
               <label class="settings-field">这段音频说了什么<input v-model="config.ref_text" class="panel-input" /></label>
             </div>
           </div>
