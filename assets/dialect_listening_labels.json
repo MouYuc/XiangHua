@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "description": "Human listening preference over DiaMoE dialect candidates. One pick per (dialect, probe) group; the candidate seeds come from output/dialect_baseline/20260923_224346/audio/<dialect>/candidates/.",
+  "run_dir": "output/dialect_baseline/20260923_224346",
+  "listener_note": "Picked the most dialect-authentic sounding candidate, judging pronunciation, rhythm/pauses and whether characters are fully spoken.",
+  "labels": [
+    {"dialect": "chengdu",      "probe": "probe002", "preferred_seed": 1},
+    {"dialect": "chengdu",      "probe": "probe004", "preferred_seed": 2},
+    {"dialect": "nanjing",      "probe": "probe002", "preferred_seed": 333},
+    {"dialect": "nanjing",      "probe": "probe004", "preferred_seed": 333},
+    {"dialect": "putonghua",    "probe": "probe002", "preferred_seed": 333},
+    {"dialect": "putonghua",    "probe": "probe004", "preferred_seed": 333},
+    {"dialect": "qingdao",      "probe": "probe002", "preferred_seed": 1},
+    {"dialect": "qingdao",      "probe": "probe004", "preferred_seed": 333},
+    {"dialect": "shanghai",     "probe": "probe002", "preferred_seed": 4},
+    {"dialect": "shanghai",     "probe": "probe004", "preferred_seed": 1},
+    {"dialect": "shijiazhuang", "probe": "probe002", "preferred_seed": 2},
+    {"dialect": "shijiazhuang", "probe": "probe004", "preferred_seed": 4},
+    {"dialect": "wuhan",        "probe": "probe002", "preferred_seed": 333},
+    {"dialect": "wuhan",        "probe": "probe004", "preferred_seed": 1},
+    {"dialect": "xian",         "probe": "probe002", "preferred_seed": 333},
+    {"dialect": "xian",         "probe": "probe004", "preferred_seed": 333},
+    {"dialect": "zhengzhou",    "probe": "probe002", "preferred_seed": 333},
+    {"dialect": "zhengzhou",    "probe": "probe004", "preferred_seed": 333}
+  ]
+}

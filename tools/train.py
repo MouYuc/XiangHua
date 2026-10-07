@@ -31,6 +31,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = REPO_ROOT / ".guangpu_webui"
 TRAIN_STATE_FILE = CONFIG_DIR / "train_state.json"
 TRAIN_LOGS_DIR = CONFIG_DIR / "train_logs"
+TRAIN_RUNS_DIR = CONFIG_DIR / "train_runs"
+TRAIN_CHECKPOINT_FILE = CONFIG_DIR / "train_checkpoints.json"
 
 # 步骤状态
 ST_PENDING = "pending"   # 待办
@@ -57,6 +59,59 @@ _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # ================= 状态持久化 =================
 def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def append_metrics(job_id: str, payload: dict) -> None:
+    """把训练过程指标追加成 JSONL，供 UI 做 loss/lr 时间序列。"""
+    if not job_id or not isinstance(payload, dict):
+        return
+    try:
+        out_dir = TRAIN_RUNS_DIR / job_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with (out_dir / "metrics.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def list_metrics(job_id: str) -> list[dict]:
+    """读取一次训练的所有 metrics 行；文件不存在或损坏时返回空列表。"""
+    path = TRAIN_RUNS_DIR / job_id / "metrics.jsonl"
+    if not path.is_file():
+        return []
+    rows = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    except (OSError, ValueError):
+        return []
+    return rows
+
+
+def save_checkpoint_entries(job_id: str, entry: dict) -> None:
+    """保存一个 checkpoint 元数据记录；旧文件保留，UI 排序按写入顺序。"""
+    if not job_id or not isinstance(entry, dict):
+        return
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        data = json.loads(TRAIN_CHECKPOINT_FILE.read_text(encoding="utf-8")) if TRAIN_CHECKPOINT_FILE.is_file() else {}
+        rows = data.get("entries", [])
+        rows.append({"job_id": job_id, **entry})
+        data["entries"] = rows
+        TRAIN_CHECKPOINT_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+
+
+def list_checkpoint_entries() -> list[dict]:
+    """按写入顺序列出训练 checkpoint 记录。"""
+    try:
+        data = json.loads(TRAIN_CHECKPOINT_FILE.read_text(encoding="utf-8"))
+        rows = data.get("entries", [])
+        return rows if isinstance(rows, list) else []
+    except (OSError, ValueError):
+        return []
 
 
 def _new_job_id(step):
@@ -293,6 +348,11 @@ def _record_progress(step, stage, text, progress_meta):
         parsed["gpu"] = progress_meta["gpu"]
     if parsed != current or current.get("stage") != stage:
         _update_step(step, progress=parsed, current_stage=stage)
+
+        # 每次状态切换到新阶段时记录一次 checkpoint 辅助信息，供后续续训/审计。
+        if current.get("stage") != stage and stage:
+            save_checkpoint_entries(last_job_id(), parsed)
+        append_metrics(last_job_id(), parsed)
 
 
 def start_job(step, title, cmds, pre=None, progress_meta=None):

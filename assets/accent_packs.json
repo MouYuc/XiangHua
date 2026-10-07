@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "packs": [
+    {
+      "id": "standard",
+      "display_name": "原音色",
+      "lang": "zh",
+      "description": "保留当前声音档案的参考音频。",
+      "uses_profile_reference": true,
+      "enabled": true
+    },
+    {
+      "id": "yue-gz",
+      "display_name": "粤语 · 广州",
+      "lang": "yue",
+      "description": "广州粤语口吻包，使用平台授权参考音频。",
+      "uses_profile_reference": false,
+      "ref_audio": "yue-gz/reference.wav",
+      "ref_text": "稳住先，呢波交畀我。",
+      "prompt_lang": "yue",
+      "pronunciation_lexicon": {},
+      "sentence_templates": {
+        "稳住，我来收尾。": "稳住先，呢波交畀我。"
+      },
+      "enabled": true
+    },
+    {
+      "id": "zh-dongbei",
+      "display_name": "东北普通话",
+      "lang": "zh",
+      "description": "东北普通话口吻包，使用平台授权参考音频。",
+      "uses_profile_reference": false,
+      "ref_audio": "zh-dongbei/reference.wav",
+      "ref_text": "老铁稳住，这波我来收尾。",
+      "prompt_lang": "zh",
+      "pronunciation_lexicon": {
+        "什么": "啥",
+        "很好": "老好了"
+      },
+      "sentence_templates": {
+        "稳住，我来收尾。": "老铁稳住，这波我来收尾。"
+      },
+      "enabled": true
+    },
+    {
+      "id": "zh-sichuan",
+      "display_name": "川渝普通话",
+      "lang": "zh",
+      "description": "川渝普通话口吻包，使用平台授权参考音频。",
+      "uses_profile_reference": false,
+      "ref_audio": "zh-sichuan/reference.wav",
+      "ref_text": "稳到起，这盘我来收尾。",
+      "prompt_lang": "zh",
+      "pronunciation_lexicon": {
+        "什么": "啥子",
+        "稳住": "稳到起"
+      },
+      "sentence_templates": {
+        "稳住，我来收尾。": "稳到起，这盘我来收尾。"
+      },
+      "enabled": true
+    }
+  ]
+}
