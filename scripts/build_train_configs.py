@@ -20,6 +20,7 @@ def main():
     p.add_argument("--root", default=r"..\GPT-SoVITS", help="GPT-SoVITS 根目录")
     p.add_argument("--dataset", required=True, help="数据集目录（含 2-name2text / 3-bert / 6-name2semantic 等）")
     p.add_argument("--exp", default="guangpu07", help="实验名")
+    p.add_argument("--log-suffix", default="", help="日志目录后缀（如 _g2p），用于与旧训练产物隔离；不填则用默认 logs_s1_v2Pro / logs_s2_v2Pro，会续训旧 checkpoint")
     p.add_argument("--s1-epochs", type=int, default=15)
     p.add_argument("--s2-epochs", type=int, default=12)
     p.add_argument("--version", default="v2Pro")
@@ -46,7 +47,9 @@ def main():
     s1["pretrained_s1"] = os.path.join(root, "GPT_SoVITS", "pretrained_models", "s1v3.ckpt")
     s1["train_semantic_path"] = os.path.join(ds, "6-name2semantic.tsv")
     s1["train_phoneme_path"] = os.path.join(ds, "2-name2text.txt")
-    s1["output_dir"] = os.path.join(ds, "logs_s1_v2Pro")
+    # 日志/ckpt 目录带后缀时是全新空目录 -> s1_train 找不到旧 ckpt 从底模开始；
+    # 不带后缀则沿用 logs_s1_v2Pro（会恢复其中的旧 checkpoint 续训）。
+    s1["output_dir"] = os.path.join(ds, "logs_s1_v2Pro" + args.log_suffix)
     with open(os.path.join(tmp, "tmp_s1.yaml"), "w", encoding="utf-8") as f:
         yaml.dump(s1, f, default_flow_style=False, allow_unicode=True)
     print("tmp_s1.yaml OK")

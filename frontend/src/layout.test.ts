@@ -11,7 +11,6 @@ const apiSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 
 const languageInputSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'components', 'LanguageMarkerInput.vue'), 'utf8')
 
 const stylesSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'styles.css'), 'utf8')
-const dockerSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'Dockerfile'), 'utf8')
 const setupPowershellSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'setup.ps1'), 'utf8')
 const setupShellSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'setup.sh'), 'utf8')
 
@@ -318,10 +317,7 @@ describe('full-bleed editor layout contracts', () => {
     expect(appSource).not.toContain('/api/batch-synthesis')
   })
 
-  it('keeps pronunciation patches user-imported and injects orb callbacks in Docker', () => {
-    expect(dockerSource).not.toContain('pinyin.patch')
-    expect(dockerSource).not.toContain('COPY patches')
-    expect(dockerSource).toContain('gpt_sovits_orb_patch.py')
+  it('keeps pronunciation patches user-imported', () => {
     expect(setupPowershellSource).not.toContain('pinyin.patch')
     expect(setupShellSource).not.toContain('pinyin.patch')
     expect(appSource).toContain('/api/engine/pronunciation-patch')

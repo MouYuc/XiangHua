@@ -1,8 +1,8 @@
 # 使用手册 · Usage Guide
 
-README 的扩展版：一键安装、命令行批量合成、Docker 部署与 FAQ 的完整说明。
+README 的扩展版：一键安装、命令行批量合成与 FAQ。
 
-## 一键安装
+> **2026-10-17 状态**：当前默认是“清晰优先”（底模 v2Pro + 清晰参考音），自动广普替换已关闭。旧的全自动“轻中广普”文字替换正在被转成档位化 accent pack；不要把它当作最终口音方案。新架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 本仓库**不携带 GPT-SoVITS 环境**（它是独立的 MIT 项目，本体 + 模型约 15GB）。
 `setup.ps1` / `setup.sh` 会自动完成 6 步：
@@ -32,7 +32,7 @@ GPT_SOVITS_ROOT=/path/to bash setup.sh
 
 ## 命令行批量合成
 
-**前提**：已安装 GPT-SoVITS，且已训练好你自己的广普音色模型。
+**前提**：已安装 GPT-SoVITS，并配置好自己的/已授权的角色声线。
 
 ```bash
 cd GPT-SoVITS
@@ -41,23 +41,23 @@ cp ../XiangHua/scripts/sitecustomize.py GPT_SoVITS/         # Windows 音频修�
 python ../XiangHua/tools/local_tts.py 台词.txt 输出目录
 ```
 
-**台词文件**：UTF-8 编码，一行一句（建议 5~20 字），`#` 开头为注释。写普通普通话即可，工具自动转「轻中」广普（是→系、不是→唔系、最重要→最紧要、没有→冇、什么→乜嘢…）。
+**台词文件**：UTF-8 编码，一行一句（建议 5~20 字），`#` 开头为注释。写普通话即可；当前默认不做自动广普替换，后续由独立的 accent pack 控制口音强度。
 
 **环境变量**（默认在项目根目录内自动发现可用环境）：
 
 | 变量 | 作用 | 默认值 |
 |---|---|---|
 | `GPT_SOVITS_ROOT` | GPT-SoVITS 根目录 | 扫描项目根目录一级子目录 |
-| `GPT_MODEL` / `SOVITS_MODEL` | 模型路径 | `GPT_weights_v2Pro/guangpu07-e14.ckpt` 等 |
+| `GPT_MODEL` / `SOVITS_MODEL` | 模型路径 | 当前配置（默认清晰优先底模） |
 | `REF_AUDIO` / `REF_TEXT` | 参考音频与对应文本 | `custom_data/sliced/训练.wav...` |
 | `TOP_K` / `TOP_P` / `TEMPERATURE` | 采样参数 | 30 / 0.88 / 0.95 |
 | `SAMPLE_STEPS` | 扩散步数（卡顿就调高） | 64 |
 | `SPEED` / `PAUSE_SECOND` | 语速 / 句间停顿 | 1.0 / 0.15 |
-| `AUTO_LIGHTMID` | 设为 `0` 关闭自动转广普 | `1` |
+| `AUTO_LIGHTMID` | 设为 `1` 才启用自动转广普；默认关闭 | `0` |
 
 ```bash
 # 用环境变量覆盖模型路径的示例
-GPT_MODEL=/path/to/myvoice-e14.ckpt SOVITS_MODEL=/path/to/myvoice_e12.pth \
+GPT_MODEL=/path/to/model.ckpt SOVITS_MODEL=/path/to/model.pth \
 python tools/local_tts.py 台词.txt out/
 ```
 
@@ -69,43 +69,7 @@ python tools/local_tts.py 台词.txt out/
 
 页面详解、配置优先级、WebUI 专属 FAQ 见 [WEBUI_GUIDE.md](WEBUI_GUIDE.md)。
 
-## Docker 部署
-
-推送 `main` / `v*` 后，[Actions 工作流](../.github/workflows/docker-image.yml) 自动构建并**双推**
-[GHCR](https://github.com/MouYuc/Clone-youself/pkgs/container/clone-youself) 与
-[Docker Hub](https://hub.docker.com/r/ZeroJy/clone-youself)（镜像不含任何声音模型）。
-
-```bash
-# 1. 准备目录（底模从 GPT-SoVITS 官方仓库下载）
-mkdir -p models/pretrained_models models/G2PWModel my_voice/custom_data \
-  my_voice/GPT_weights_v2Pro my_voice/SoVITS_weights_v2Pro .guangpu_webui output
-
-# 2. 拉取镜像并启动与本机一致的 WebUI（需要 NVIDIA Container Toolkit）
-docker compose up -d
-
-# 3. 查看启动日志
-docker compose logs -f XiangHua
-```
-
-浏览器打开 <http://127.0.0.1:7860>。Compose 会自动拉取
-`ghcr.io/mouyuc/clone-youself:latest`，也可以先执行 `docker pull` 预拉取。
-停止服务：`docker compose down`。
-
-Compose 默认挂载以下目录：
-
-- `models/pretrained_models`、`models/G2PWModel`：公开底模
-- `my_voice/custom_data`：参考音频和训练数据，映射到 `/workspace/GPT-SoVITS/custom_data`
-- `my_voice/GPT_weights_v2Pro`、`my_voice/SoVITS_weights_v2Pro`：个人训练模型，映射到 GPT-SoVITS 对应目录
-- `.guangpu_webui`：WebUI 配置与历史记录
-- `output`：合成结果，可在浏览器直接试听和下载
-
-容器内项目根目录是 `/workspace`。环境检测只扫描它的直接子目录，并识别其中包含
-`GPT_SoVITS` 的目录，因此内置的 `/workspace/GPT-SoVITS` 会自动出现；如需添加其他环境，
-将其挂载为 `/workspace/<环境名>`，且该目录下必须有 `GPT_SoVITS` 子目录。
-
-- 首次推送后约 **15~30 分钟**出镜像，可在仓库 **Actions** 页查看构建进度
-- 想让镜像同时出现在 Docker Hub（Docker Pulls 徽章统计的就是它）：在仓库 **Settings → Secrets and variables → Actions** 配置 `DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`（Docker Hub 账号 → Account Settings → Security → New Access Token），下次推送自动双推
-- 训练自己的音色时，把录音放进 `my_voice/` 后直接在 WebUI「训练」页执行
+> Docker 部署说明已在 2026-10-17 清场中移除；当前只支持本地运行。
 
 ## 常见问题
 
@@ -131,29 +95,13 @@ Compose 默认挂载以下目录：
 
 ```text
 XiangHua/
-├── setup.ps1 / setup.sh        # 一键环境安装（Windows / Linux·macOS）
-├── Dockerfile                  # 环境镜像（不含声音模型）
-├── docker-compose.yml
-├── .github/workflows/          # 推送 GitHub 后自动构建镜像 → GHCR + Docker Hub
-├── patches/
-│   ├── pinyin.patch    # 广普发音词典补丁（15 个粤字读音）
-│   └── README.md               # 补丁说明 + 词典对照表
-├── tools/
-│   ├── local_tts.py    # 批量合成工具（可移植，环境变量配置）
-│   ├── webui.py        # WebUI（浏览器操作：合成 + 训练页）
-│   └── train.py        # 训练后端（切片/识别/特征/训练的后台任务封装）
-├── scripts/
-│   ├── run_whisper.py          # 切片语音识别
-│   ├── fix_transcript.py       # 标注人工修正模板
-│   ├── build_train_configs.py  # 训练配置生成
-│   └── sitecustomize.py        # Windows torchaudio 修复
-├── assets/
-│   ├── logo.png                # 项目 Logo
-│   └── 广普训练台词本.txt       # 录音参考台词
-├── examples/                   # 两个可直接运行的台词示例（含 # 注释行支持）
-└── docs/
-    ├── USAGE_GUIDE.md          # 使用手册（本文档）
-    ├── WEBUI_GUIDE.md          # WebUI 使用说明
-    ├── TRAINING_GUIDE.md       # 训练流程详解
-    └── BADGES_GUIDE.md         # 手动添加徽章教程
+├── backend/             # FastAPI 合成、训练、音色服务
+├── frontend/            # Vue 3 WebUI
+├── tools/               # local_tts / webui / train
+├── scripts/             # 训练链、数据准备、验收
+├── GPT-SoVITS/          # GPT-SoVITS v2Pro 引擎与模型
+├── assets/              # 口音包清单、录音台词本、Logo
+├── docs/                # 架构、产品、训练与使用文档
+├── examples/            # 示例台词
+└── patches/             # 发音补丁
 ```

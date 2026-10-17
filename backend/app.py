@@ -110,18 +110,26 @@ def _public_synthesis_event(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _public_timbre_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
-    """Attach a playable URL to a finished conversion result.
+    """Attach playable URLs to a finished conversion result.
 
-    The result file lives under ``output/vc/webui``; registering it as a download
-    is what lets the browser play it without exposing the filesystem path.
+    The result files live under ``output/vc/webui``; registering them as downloads is
+    what lets the browser play them without exposing the filesystem path. Mix
+    replacement produces several files, and all of them are useful: the finished song, the
+    isolated converted vocal (so the user can hear what actually replaced the voice), and
+    the extracted original vocal (so the user can judge the separator).
     """
     data = dict(snapshot or {})
     result = data.get("result")
     if isinstance(result, dict) and result.get("file"):
         row = dict(result)
-        path = Path(str(row["file"]))
-        row.pop("file", None)
+        path = Path(str(row.pop("file")))
         row["url"] = _as_url(core.register_download(path)) if path.is_file() else ""
+        for key, url_key in (
+            ("converted_vocal", "converted_vocal_url"),
+            ("vocal_stem", "vocal_stem_url"),
+        ):
+            candidate = Path(str(row.pop(key, "") or ""))
+            row[url_key] = _as_url(core.register_download(candidate)) if candidate.is_file() else ""
         data["result"] = row
     return data
 
@@ -357,7 +365,11 @@ def create_app() -> FastAPI:
         profile_id: str = Form("current"),
         device: str | None = Form(None),
     ) -> dict[str, Any]:
-        """Convert an uploaded recording (speech or singing) into a profile's voice."""
+        """Convert an uploaded recording (speech, or a solo singing take) into a profile's voice.
+
+        A *finished song* does not belong here: its vocals would have to be separated from
+        the accompaniment first, and the singing-voice replacement route was removed.
+        """
         if topk < 1:
             raise HTTPException(status_code=400, detail="topk 必须 >= 1。")
         try:
@@ -501,25 +513,42 @@ def create_app() -> FastAPI:
         source = _transcript_path(root)
         if not source.exists():
             raise HTTPException(status_code=404, detail="还没有识别结果，请先完成 Whisper 识别。")
-        rows = read_list(source)
         sliced_root = (root / "custom_data" / "sliced").resolve()
+        # 路径按文件名修复：标注里存的是绝对路径，项目换机器后它们全部失效，
+        # 那样既听不到试听、特征提取也必然失败。
+        rows = read_list(source, sliced_dir=sliced_root)
+        repaired = 0
         for row in rows:
+            if row.get("path_repaired"):
+                repaired += 1
             try:
                 audio_path = Path(str(row.get("path") or "")).resolve(strict=True)
                 audio_path.relative_to(sliced_root)
                 row["audio_url"] = _as_url(core.register_download(audio_path))
             except (OSError, ValueError):
                 row["audio_url"] = ""
-        return {"rows": rows}
+        return {
+            "rows": rows,
+            "repaired_paths": repaired,
+            "repair_note": (
+                f"检测到 {repaired} 条标注的音频路径在本机不存在，已按文件名在切片目录里重新定位。"
+                "保存后会写回列表。"
+                if repaired
+                else ""
+            ),
+        }
 
     @app.put("/api/training/transcript")
     def save_transcript(request: TranscriptUpdate) -> dict[str, Any]:
         root = _root_or_400(core.load_config())
         output = root / "custom_data" / "asr" / "sliced_corrected.list"
         output.parent.mkdir(parents=True, exist_ok=True)
-        count = write_corrected(output, request.rows)
-        mark_step("correct", ST_DONE, note=f"已保存 {count} 句")
-        return _job_message("correct", f"已保存 {count} 句到 sliced_corrected.list，可以进入特征提取。")
+        result = write_corrected(output, request.rows)
+        note = f"已保存 {result['lines']} 句"
+        if result["sanitized"]:
+            note += f"，其中 {result['sanitized']} 句含竖线已替换为全角"
+        mark_step("correct", ST_DONE, note=note)
+        return _job_message("correct", f"{note}到 sliced_corrected.list，可以进入特征提取。")
 
     @app.post("/api/training/transcript/skip")
     def skip_transcript() -> dict[str, Any]:

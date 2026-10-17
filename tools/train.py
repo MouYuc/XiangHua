@@ -590,22 +590,32 @@ def cmd_slice(root, sil=-35, min_len=4000, min_gap=300, keep_sil=500, peak=0.9, 
 
 
 def cmd_asr(root, model="large-v3", language="zh"):
-    """② 切片 -> Whisper 识别标注（在仓库根目录运行 scripts/run_whisper.py）。"""
+    """② 切片 -> Whisper 识别标注（在仓库根目录运行 scripts/run_whisper.py）。
+
+    本地已有 faster-whisper 权重时传 ``--model-dir``：faster-whisper 按名字加载会去
+    HuggingFace 下载，而本项目的运行环境访问不到那里，整条链路第一步就会断。
+    """
     sliced = Path(root) / "custom_data" / "sliced"
     asr = Path(root) / "custom_data" / "asr"
-    return [
-        (
-            [
-                sys.executable, str(REPO_ROOT / "scripts" / "run_whisper.py"),
-                "--input", str(sliced),
-                "--output", str(asr),
-                "--model", model,
-                "--language", language,
-            ],
-            str(REPO_ROOT),
-            None,
-        )
+    command = [
+        sys.executable, str(REPO_ROOT / "scripts" / "run_whisper.py"),
+        "--input", str(sliced),
+        "--output", str(asr),
+        "--model", model,
+        "--language", language,
     ]
+    try:
+        # 延迟导入：``run_whisper`` 顶层会 import faster_whisper，
+        # 而构建命令列表的路径不该为了一次查找付出这个代价。
+        sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        from run_whisper import resolve_local_model
+
+        local = resolve_local_model(model)
+    except Exception:
+        local = None
+    if local is not None:
+        command += ["--model-dir", str(local)]
+    return [(command, str(REPO_ROOT), None)]
 
 
 def cmd_feat(root, exp, corrected_rel="custom_data/asr/sliced_corrected.list"):
@@ -701,23 +711,57 @@ def find_models(root):
 
 
 # ================= 标注文件读写（校对用） =================
-def read_list(path):
-    """读取 .list 标注文件 -> [{"path": ..., "text": ...}]。"""
+def read_list(path, sliced_dir=None):
+    """读取 .list 标注文件 -> [{"path": ..., "text": ...}]。
+
+    ``sliced_dir`` 打开路径修复：标注文件里存的是**绝对路径**，所以项目一旦被复制到
+    另一台机器（本项目当前就是这样，列表里还写着 `D:\\AIVoice\\...`），
+    这些路径在本机全都不存在。下游 `1-get-text.py` 会把第一列直接当路径用，
+    于是特征提取必然失败，而页面上只表现为「听不到纠错试听」。
+
+    给了 ``sliced_dir`` 就按**文件名**在切片目录里重新定位，并在行上标明
+    ``path_repaired``，让上层能告诉用户发生了什么——修好路径是好事，
+    但悄悄改掉用户数据里的路径不是。
+    """
     rows = []
     for ln in Path(path).read_text(encoding="utf-8").splitlines():
         ln = ln.strip()
         if not ln:
             continue
         parts = ln.split("|")
-        rows.append({"path": parts[0], "text": "|".join(parts[3:]) if len(parts) > 3 else ""})
+        row = {"path": parts[0], "text": "|".join(parts[3:]) if len(parts) > 3 else ""}
+        if sliced_dir is not None:
+            original = Path(str(row["path"]))
+            if not original.is_file():
+                candidate = Path(sliced_dir) / original.name
+                if candidate.is_file():
+                    row["original_path"] = row["path"]
+                    row["path"] = str(candidate)
+                    row["path_repaired"] = True
+        rows.append(row)
     return rows
 
 
 def write_corrected(path, rows):
-    """把校对后的 rows 写回 .list（保留 |sliced|ZH| 段）。"""
-    lines = [f"{r['path']}|sliced|ZH|{r['text']}" for r in rows if r.get("path")]
+    """把校对后的 rows 写回 .list（保留 |sliced|ZH| 段）。
+
+    文本里的竖线会被替换成全角 ``｜``：``1-get-text.py`` 用的是
+    ``wav_name, spk_name, language, text = line.split("|")``，多一个竖线就会
+    抛 ``ValueError`` 让整个特征提取失败。替换比让下游崩掉更可取，
+    而且被替换的条数会返回给调用方。
+    """
+    lines = []
+    sanitized = 0
+    for row in rows:
+        if not row.get("path"):
+            continue
+        text = str(row.get("text") or "")
+        if "|" in text:
+            sanitized += 1
+            text = text.replace("|", "｜")
+        lines.append(f"{row['path']}|sliced|ZH|{text}")
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return len(lines)
+    return {"lines": len(lines), "sanitized": sanitized}
 
 
 # ================= 补丁检查 / 应用 =================

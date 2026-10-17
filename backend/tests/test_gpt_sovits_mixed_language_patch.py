@@ -193,16 +193,5 @@ def test_installers_apply_mixed_language_patch():
     repo_root = Path(__file__).resolve().parents[2]
     powershell = (repo_root / "setup.ps1").read_text(encoding="utf-8")
     shell = (repo_root / "setup.sh").read_text(encoding="utf-8")
-    dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
-
     assert "gpt_sovits_mixed_language_patch.py" in powershell
     assert "gpt_sovits_mixed_language_patch.py" in shell
-    assert "gpt_sovits_mixed_language_patch.py" in dockerfile
-
-
-def test_docker_build_checks_mixed_language_patch():
-    repo_root = Path(__file__).resolve().parents[2]
-    dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
-
-    assert "grep -q preprocess_segments GPT_SoVITS/TTS_infer_pack/TextPreprocessor.py" in dockerfile
-    assert "grep -q segment_mixed GPT_SoVITS/TTS_infer_pack/TTS.py" in dockerfile

@@ -3,15 +3,15 @@
 
 The product claim is: one personal timbre, five languages (zh / yue / en / ja / ko), one
 continuous inference per line. Three of those words are testable without an ear, and
-`docs/tts-objective-eval-playbook.md` names the methods:
+The project's objective evaluation criteria are:
 
 1. **Is each output actually in its language?** Language identification with
    **SenseVoiceSmall** (`iic/SenseVoiceSmall`, whose tokeniser is literally
-   `chn_jpn_yue_eng_ko`). The playbook's zero-training criterion for five-language
+   `chn_jpn_yue_eng_ko`). The zero-training criterion for five-language
    dubbing is LID agreement >= 95%.
 2. **Is it still the same voice across all five?** Speaker embedding cosine similarity
    from the independent ERes2NetV2 model - never from the synthesis engine's own
-   features. The playbook's user-value metric is the **cross-language timbre drift**,
+   features. The user-value metric is the **cross-language timbre drift**,
    ``max(SECS) - min(SECS) <= 0.05``.
 3. **Did it come out as one pass?** The mixed path must report
    ``synthesis_mode=single_pass_explicit`` with ``acoustic_inference_calls == 1``;
@@ -170,7 +170,7 @@ def prosody(path: str | Path) -> dict:
 
     pYIN rather than CREPE on purpose: CREPE returns a 2005 Hz noise curve with peak
     periodicity 0.0166 on this project's own recordings, while pYIN reads them
-    correctly. ``docs/SVC_SINGING_EVAL.md`` records that investigation.
+    correctly. The investigation is recorded in the project history.
     """
     import soundfile as sf
 

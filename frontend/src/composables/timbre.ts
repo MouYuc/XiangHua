@@ -34,7 +34,8 @@ export type TimbreProfileBuildResult = {
   total_gb?: number
 }
 
-export type TimbreJobResult = Partial<TimbreConvertResult> & Partial<TimbreProfileBuildResult>
+export type TimbreJobResult = Partial<TimbreConvertResult>
+  & Partial<TimbreProfileBuildResult>
 
 export type TimbreJob = {
   job_id: string

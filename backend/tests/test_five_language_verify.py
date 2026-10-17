@@ -1,7 +1,7 @@
 """Unit tests for the five-language verification logic.
 
 The population results - LID 5/5, the mixed single-pass check, and the cross-language
-timbre drift against its measured noise floor - live in ``docs/FIVE_LANGUAGE_VERIFY.md``.
+timbre drift against its measured noise floor are recorded in the project history.
 This file covers the pure logic, and pins two mistakes that were actually made while
 building it, because both produced a clean-looking verdict from broken inputs:
 

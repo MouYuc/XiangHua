@@ -2790,6 +2790,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   font-size: 12px;
 }
 
+/* 音色唱歌（整曲换人声）入口已随 RVC 一并移除，相关样式随之删除。 */
+
 .timbre-mode-switch { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .timbre-mode-btn,
 .timbre-topk-btn {

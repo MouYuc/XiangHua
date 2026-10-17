@@ -17,10 +17,22 @@ README_preview.html
 /.playwright-cli
 /tests
 
+# Generated at runtime by scripts/run_dataset_prep.py and scripts/run_training_chain.py:
+# the sitecustomize module that injects the Gradio stub into child interpreters. It is
+# rewritten on every run, so it is not source.
+scripts/_shim_boot/
+
+# Runtime caches and tool-local state.
+.cache/
+.pytest_cache/
+.webui/
+
+# Nested standalone git repositories vendored under third_party (each has its own .git);
+# the parent repo has never tracked their contents, so keep them out of status.
+third_party/knn-vc/
+
 # Added by code-review-graph
 .code-review-graph/
 backend/tests/test_gpt_sovits_orb_patch.py
 backend/tests/test_synthesis_languages.py
 backend/tests/test_synthesis_orb_events.py
-archive/research/README.md
-docs/RESEARCH_INDEX.md

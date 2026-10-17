@@ -1,9 +1,9 @@
-"""Unit tests for pitch estimation and the singing-conversion metrics.
+"""Unit tests for pitch estimation and its guards.
 
 These tests are about the arithmetic and the guards, not about the estimator's
 accuracy - accuracy is validated against Vocadito's hand annotations by
 ``scripts/f0_estimate.py --validate`` (median error 8.6 cents, raw pitch accuracy
-0.982) and that measurement lives in ``docs/SVC_SINGING_EVAL.md``.
+0.982) and that measurement is recorded in the project history.
 
 Three defects found while building this are pinned here, because each one produced a
 plausible-looking number rather than an error:
@@ -18,7 +18,7 @@ plausible-looking number rather than an error:
 
 Run from the repository root:
 
-    .venv\\Scripts\\python.exe -m unittest backend.tests.test_f0_estimate backend.tests.test_svc_metrics -v
+    .venv\\Scripts\\python.exe -m unittest backend.tests.test_f0_estimate -v
 """
 
 from __future__ import annotations

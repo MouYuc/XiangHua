@@ -19,23 +19,7 @@ python tools/webui.py
 
 浏览器打开 <http://127.0.0.1:7860>。
 
-### Docker
-
-在项目根目录准备 `models/pretrained_models`、`models/G2PWModel`、`my_voice/custom_data`、
-`my_voice/GPT_weights_v2Pro`、`my_voice/SoVITS_weights_v2Pro`、
-`.guangpu_webui` 和 `output` 后执行：
-
-```bash
-docker compose up -d
-```
-
-容器 WebUI 监听 `0.0.0.0:7860`，主机通过 <http://127.0.0.1:7860> 访问。
-容器项目根目录固定为 `/workspace`，环境检测扫描其直接子目录；默认的
-`/workspace/GPT-SoVITS` 会自动被识别。额外挂载的环境也必须直接位于
-`/workspace/<环境名>`，并包含 `GPT_SoVITS` 子目录。
-
-> 如果 `GPT_SOVITS_ROOT` 不设置，默认扫描项目根目录下的一级子目录，选择包含 `GPT_SoVITS` 的环境。
-> 也可以在 WebUI 的「设置」页填写路径并保存，写入 `.guangpu_webui/config.json`（不会入库）。
+> **2026-10-17 状态**：WebUI 仍是本地单用户原型，不是 B2B API。Docker 部署说明已在清场中移除；当前只支持本地运行。旧目录 `my_voice/`、`models/` 已删除，新架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 页面说明
 
@@ -73,12 +57,12 @@ docker compose up -d
 4. 在同一面板中选择“音频语言”，并逐字填写音频中实际说出的内容。中文音色样本可以合成未标记中文，或显式标记的 `<en>...</en>`、`<ja>...</ja>` 台词。
 5. 点击“保存为默认”后，音频路径、样本文本和音频语言会在下次启动时恢复。
 
-“自动转轻中广普”只作用于中文片段；粤语、英语、日语和韩语片段会直接传入模型。
+“自动转轻中广普”当前默认关闭；后续由独立 accent pack 按档位控制，只作用于中文片段。
 同一行出现多个语种时会自动提交一次 `segment_mixed` 混合推理：五种语言按标签顺序分别执行 G2P，再合并为一次 GPT/SoVITS 声学推理和一次 acoustic decode，不会把各段音频拆开拼接。非末段的 `。！？!?…` 等终止标点只在内部 `pronunciation_text` 中归一化，用户输入、历史和下载文本保持原样；语言边界默认使用 120ms pause。合成页底部动作条的“合成参数”抽屉还提供“混合 EOS 下限”和“混合 Token 上限”：留空使用按 phone 数计算的生产默认，填写数值则覆盖当前请求；可在“保存为默认”后持久化。`mixed_eos_floor=11` 仍仅建议用于诊断实验，不应盲目固定为生产值。
 
 ### 发音补丁导入
 
-Docker 镜像不再内置发音补丁。请从仓库获取 `patches/pinyin.patch`，然后在 WebUI 的
+发音补丁不再自动内置。请从仓库获取 `patches/pinyin.patch`，然后在 WebUI 的
 “模型与参考音频 → 发音补丁”中导入。导入器会先执行 `git apply --check`，校验通过后才
 应用到当前 GPT-SoVITS 环境；不兼容、已应用或超过 1 MB 的文件会被拒绝。
 
@@ -100,7 +84,7 @@ Docker 镜像不再内置发音补丁。请从仓库获取 `patches/pinyin.patch
 | `REF_AUDIO` / `REF_TEXT` | 参考音频与文本 |
 | `TOP_K` / `TOP_P` / `TEMPERATURE` / `SAMPLE_STEPS` / `SPEED` / `PAUSE_SECOND` | 合成参数 |
 | `AUTO_LIGHTMID` | `0` 关闭自动转广普 |
-| `XIANGHUA_SERVER_NAME` / `XIANGHUA_SERVER_PORT` | 监听地址 / 端口（本机默认 127.0.0.1:7860，Docker Compose 默认 0.0.0.0:7860） |
+| `XIANGHUA_SERVER_NAME` / `XIANGHUA_SERVER_PORT` | 监听地址 / 端口（本机默认 127.0.0.1:7860） |
 
 ## 常见问题
 

@@ -35,12 +35,12 @@ import soundfile as sf
 
 
 # ================= 配置区（可用环境变量覆盖） =================
-GPT_MODEL = os.environ.get("GPT_MODEL", os.path.join(GPT_SOVITS_ROOT, "GPT_weights_v2Pro", "guangpu07-e14.ckpt"))
+GPT_MODEL = os.environ.get("GPT_MODEL", os.path.join(GPT_SOVITS_ROOT, "GPT_SoVITS", "pretrained_models", "s1v3.ckpt"))
 SOVITS_MODEL = os.environ.get(
-    "SOVITS_MODEL", os.path.join(GPT_SOVITS_ROOT, "SoVITS_weights_v2Pro", "guangpu07_e12_s396.pth")
+    "SOVITS_MODEL", os.path.join(GPT_SOVITS_ROOT, "GPT_SoVITS", "pretrained_models", "v2Pro", "s2Gv2Pro.pth")
 )
-REF_AUDIO = os.environ.get("REF_AUDIO", os.path.join(GPT_SOVITS_ROOT, "custom_data", "sliced", "训练.wav_0000191040_0000343680.wav"))
-REF_TEXT = os.environ.get("REF_TEXT", "这条路走到头，左转就到了。")
+REF_AUDIO = os.environ.get("REF_AUDIO", os.path.join(GPT_SOVITS_ROOT, "custom_data", "sliced", "训练.wav_0000018880_0000143680.wav"))
+REF_TEXT = os.environ.get("REF_TEXT", "今天天气真不错，我们出去走走吧。")
 
 TOP_K = int(os.environ.get("TOP_K", "30"))
 TOP_P = float(os.environ.get("TOP_P", "0.88"))
@@ -49,8 +49,8 @@ SAMPLE_STEPS = int(os.environ.get("SAMPLE_STEPS", "64"))
 SPEED = float(os.environ.get("SPEED", "1.0"))
 PAUSE_SECOND = float(os.environ.get("PAUSE_SECOND", "0.15"))
 
-# 轻中浓度自动转换（设为 0 关闭）
-AUTO_LIGHTMID = os.environ.get("AUTO_LIGHTMID", "1") == "1"
+# 轻中浓度自动转换（默认关闭；设为 1 才启用）
+AUTO_LIGHTMID = os.environ.get("AUTO_LIGHTMID", "0") == "1"
 # =============================================================
 
 

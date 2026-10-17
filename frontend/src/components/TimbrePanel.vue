@@ -348,7 +348,7 @@ onBeforeUnmount(() => {
           <header class="timbre-card-head">
             <div>
               <div id="timbre-convert-title" class="panel-section-title">音色转换</div>
-              <p class="timbre-card-desc">源音频可以是合成结果、上传的录音，也可以是唱歌；长音频按 15 秒分块编码。</p>
+              <p class="timbre-card-desc">源音频是一条单独的人声（合成结果、录音或清唱），长音频按 15 秒分块编码。</p>
             </div>
             <button class="btn-outline" :disabled="sourcesBusy" @click="refreshSources">{{ sourcesBusy ? '读取中…' : '刷新列表' }}</button>
           </header>

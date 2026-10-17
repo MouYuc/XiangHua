@@ -24,16 +24,16 @@ measurement and a guess:
 
 * **Background music and multiple speakers are not detected here.** Doing it
   properly needs an independent speaker-verification model and a diariser, and a
-  cheap proxy would produce confident wrong verdicts. ``docs/REFERENCE_AUDIO_GATE.md``
-  records the approach for when that is worth building.
+  cheap proxy would produce confident wrong verdicts. The calibration notes
+  record the approach for when that is worth building.
 * **The SNR estimate is a stated definition, not a standard.** It is the ratio of
   mean power inside detected speech spans to mean power outside them, which is
   transparent and reproducible but is not ITU-T P.56 or WADA-SNR. It is reported
   as an estimate and never as a certified figure.
 
-Thresholds are calibrated against real audio in ``docs/REFERENCE_AUDIO_GATE.md``;
-the vendor's own eighteen official DiaMoE prompts are the reference population,
-because a gate that rejects the shipped prompts is miscalibrated by definition.
+Thresholds are calibrated against real audio from a licensed reference-prompt set;
+that set is the reference population, because a gate that rejects known-good
+prompts is miscalibrated by definition.
 """
 
 from __future__ import annotations
@@ -58,9 +58,9 @@ SILENCE_FLOOR_DB = 35.0
 
 # What each consumer needs from a reference clip. The durations are set from the
 # populations these clips actually come from, measured in
-# ``docs/REFERENCE_AUDIO_GATE.md``: the vendor's own eighteen official DiaMoE
-# prompts span 1.99-8.78 s, so a ``synthesis`` lower bound above about two seconds
-# would reject the shipped prompts - which is miscalibration by definition. The
+# Calibration prompts span 1.99-8.78 s, so a ``synthesis`` lower bound above about two seconds
+# would reject known-good prompts - which is miscalibration by definition. The
+
 # kNN-VC bounds come from the paper (arXiv:2305.18975): quality degrades below
 # roughly 20-30 s of reference speech and the earlier measurement in this repo found
 # benefit saturating around five minutes.
@@ -341,7 +341,7 @@ def segment_mask(spans: list[tuple[int, int]], hop: int, length: int) -> np.ndar
 # noise estimator: broadband noise raises every frame above the silence threshold,
 # so the clip reports zero silent frames and the estimate disappears exactly when it
 # is needed. Measured on a ground-truth noise sweep in
-# ``docs/REFERENCE_AUDIO_GATE.md``.
+# the reference-audio calibration measurements.
 NOISE_PERCENTILE = 5.0
 
 # Speech level is read from a high percentile rather than the peak: one plosive

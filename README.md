@@ -1,131 +1,138 @@
-<p align="center">
-  <img src="assets/logo.png" width="128" alt="GuangPu-TTS Logo" />
-</p>
+# 像话 XiangHua · 角色声线平台
 
-<h1 align="center">像话 XiangHua · 口音 TTS</h1>
-
-<p align="center">
-  带口音的中文语音合成（TTS）工具包：台词批量配音，持续扩展实时连续对话<br/>
-  <b>说话，就要像话</b>——输入文字，AI 用你训练完成的口音说出来
-</p>
-
-<p align="center">
-  <a href="https://github.com/MouYuc/Clone-youself/blob/main/LICENSE"><img src="https://img.shields.io/github/license/MouYuc/Clone-youself?style=for-the-badge" alt="License" /></a>
-  <a href="https://github.com/MouYuc/Clone-youself/pkgs/container/clone-youself"><img src="https://img.shields.io/badge/Docker-GHCR-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker" /></a>
-  <a href="https://hub.docker.com/r/ZeroJy/clone-youself"><img src="https://img.shields.io/docker/pulls/ZeroJy/clone-youself?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Pulls" /></a>
-</p>
-
-<p align="center">
-  <!-- 运行环境徽章 -->
-  <img src="https://img.shields.io/badge/Python-3.10-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10" />
-  <img src="https://img.shields.io/badge/PyTorch-2.6-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white" alt="PyTorch 2.6" />
-  <img src="https://img.shields.io/badge/CUDA-12-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="CUDA 12" />
-  <img src="https://img.shields.io/badge/Windows%20%7C%20Linux%20%7C%20macOS-%E2%9C%93-0969DA?style=for-the-badge" alt="Windows | Linux | macOS" />
-  <img src="https://img.shields.io/badge/VRAM-%E2%89%A58GB-8250DF?style=for-the-badge" alt="VRAM ≥ 8GB" />
-</p>
-
-<!-- 以上徽章均为 SVG，由 shields.io 实时生成、自动更新 -->
+> 给独立游戏与短剧团队的“角色声线 API + 训练能力 + 授权账本”。
+> 当前仓库是本地 WebUI/训练原型，正在向四层解耦架构与 B2B API 迁移。
 
 ---
 
-> ⚠️ 请只使用**自己的声音**录音训练，不要克隆他人（包括动漫角色配音演员）的声音。
+## 当前状态（2026-10-17）
 
-## 快速开始
+这是一次清场后的新起点：
 
-<table align="center" style="width:100%;text-align:center;">
-<thead>
-<tr><th>步骤</th><th>Windows</th><th>Linux / macOS</th></tr>
-</thead>
-<tbody>
-<tr><td>① 安装环境</td><td><code>.\setup.ps1</code></td><td><code>bash setup.sh</code></td></tr>
-<tr><td>② 启动 WebUI</td><td><code>python tools\webui.py</code></td><td><code>python tools\webui.py</code></td></tr>
-<tr><td>③ 在 WebUI 合成</td><td>打开「合成」页，粘贴台词 → 试听 / 下载</td><td>同左</td></tr>
-</tbody>
-</table>
+- 已删除过期研究文档、旧实验/输出、缓存、DiaMoE 死路和旧中间 checkpoint；
+- 保留用户原始录音、切片、ASR、最终权重、当前模型和运行环境；
+- 默认合成已切到“清晰优先”：底模 v2Pro + 清晰参考音，关闭自动广普替换；
+- 新架构与产品路线见：
+  - [架构：音色/发音/韵律/口音四分离](docs/ARCHITECTURE.md)
+  - [B2B 角色声线 API 与授权策略](docs/B2B_VOICE_API_STRATEGY.md)
+  - [项目持久记忆](docs/PROJECT_MEMORY.md)
 
-> 首次试跑：在 WebUI「设置」页把模型路径指到 GPT-SoVITS 自带 v2Pro 底模。不想用浏览器？命令行批量合成 `python tools\local_tts.py 台词.txt out\`（`GPT_MODEL` / `SOVITS_MODEL` 指定模型），详见[使用手册](docs/USAGE_GUIDE.md)。
+---
 
-- **用自己的声音**：先按[训练指南](docs/TRAINING_GUIDE.md)录音并训练出专属音色，再把模型路径换成训练产物
-- **台词文件**：UTF-8，一行一句（建议 5~20 字），`#` 开头为注释；也可在 WebUI「合成」页直接粘贴台词
+## 现在的核心原则
+
+> **目标音频只用来提取音色；发音由字典决定；韵律和口音各自独立。**
+
+不再默认对目标音频做全量 fine-tune。
+全量微调会把音色、口音、韵律和内容纠缠在一起，造成“音色像但听不清”。
+
+后续工作优先级：
+
+1. 建固定回归集，先保证可懂度；
+2. 把口音规则档位化，保护固定搭配；
+3. 把发音字典从训练特征里外置；
+4. 再训练音色 adapter；
+5. 最后做 Managed Training、B2B API 和授权账本。
+
+---
+
+## 当前可运行内容
+
+### 1. 本地 WebUI
+
+```powershell
+.\setup.ps1
+& .venv\Scripts\python.exe tools\webui.py
+```
+
+打开浏览器后：
+
+- 合成：粘贴台词 → 试听/下载；
+- 批量：导入 TXT → 整批合成；
+- 训练：切片、ASR、校对、特征、训练；
+- 历史/设置：本机运行记录与模型路径。
+
+### 2. 命令行批量合成
+
+```powershell
+& .venv\Scripts\python.exe tools\local_tts.py examples\台词示例_普通话输入.txt out\
+```
+
+可用环境变量覆盖：
+
+```text
+GPT_MODEL
+SOVITS_MODEL
+REF_AUDIO
+REF_TEXT
+AUTO_LIGHTMID
+```
+
+### 3. 当前默认模型
+
+```text
+GPT:    GPT-SoVITS/GPT_SoVITS/pretrained_models/s1v3.ckpt
+SoVITS: GPT-SoVITS/GPT_SoVITS/pretrained_models/v2Pro/s2Gv2Pro.pth
+参考音: GPT-SoVITS/custom_data/sliced/训练.wav_0000018880_0000143680.wav
+文本:   今天天气真不错，我们出去走走吧。
+```
+
+这是“清晰优先”预设，不代表最终音色模型。
+
+---
+
+## 当前实现与目标形态
+
+| 模块 | 当前 | 目标 |
+|---|---|---|
+| 合成 | 本地单用户 FastAPI + WebUI | 多租户 B2B API |
+| 训练 | 本地 CLI/WebUI 训练链 | Managed / API / On-prem 三层 |
+| 发音 | 文本替换 + G2P 补丁 | 外置 PronunciationPlan + 版本化字典 |
+| 音色 | 参考音/全量微调 | speaker encoder + adapter |
+| 口音 | 全局替换 | AccentPack + 强度档位 |
+| 授权 | 文档与配置 | License Ledger + 证书 + 验证 |
+| 导出 | 音频/历史 | WAV/MP3 + SRT + manifest |
+
+---
+
+## 文档
+
+- [架构：四分离](docs/ARCHITECTURE.md)
+- [B2B API 与授权策略](docs/B2B_VOICE_API_STRATEGY.md)
+- [项目记忆](docs/PROJECT_MEMORY.md)
+- [训练指南](docs/TRAINING_GUIDE.md)
+- [使用手册](docs/USAGE_GUIDE.md)
+- [WebUI 指南](docs/WEBUI_GUIDE.md)
+
+---
 
 ## 目录结构
 
 ```text
-XiangHua/
-├── setup.ps1 / setup.sh        # 一键环境安装（Windows / Linux·macOS）
-├── Dockerfile                  # 环境镜像（不含声音模型）
-├── docker-compose.yml
-├── .github/workflows/          # 推送 GitHub 后自动构建镜像 → GHCR + Docker Hub
-├── patches/
-│   ├── pinyin.patch    # 广普发音词典补丁（15 个粤字读音）
-│   └── README.md               # 补丁说明 + 词典对照表
-├── tools/
-│   ├── local_tts.py    # 批量合成工具（可移植，环境变量配置）
-│   ├── webui.py        # WebUI（浏览器操作：合成 + 训练页）
-│   └── train.py        # 训练后端（后台任务封装）
-├── scripts/
-│   ├── run_whisper.py          # 切片语音识别
-│   ├── fix_transcript.py       # 标注人工修正模板
-│   ├── build_train_configs.py  # 训练配置生成
-│   └── sitecustomize.py        # Windows torchaudio 修复
-├── assets/
-│   ├── logo.png                # 项目 Logo
-│   └── 广普训练台词本.txt       # 录音参考台词
-├── examples/                   # 两个可直接运行的台词示例（含 # 注释行支持）
-└── docs/
-    ├── USAGE_GUIDE.md          # 使用手册（安装 / CLI / Docker / FAQ）
-    ├── WEBUI_GUIDE.md          # WebUI 使用说明
-    ├── TRAINING_GUIDE.md       # 训练流程详解
-    └── BADGES_GUIDE.md         # 手动添加徽章教程
+backend/            FastAPI 后端、合成任务、声音/训练服务
+frontend/           Vue 3 WebUI
+tools/              本地合成、WebUI、训练封装
+scripts/            训练链、数据集准备、验收脚本
+GPT-SoVITS/         GPT-SoVITS v2Pro 引擎与模型
+assets/             口音包清单、录音台词本、Logo
+docs/               架构、产品、训练与使用文档
+examples/           示例台词
+patches/            发音补丁
+third_party/knn-vc/ 当前音色转换链路
 ```
 
-## 特性
+---
 
-<table align="center" style="width:100%;text-align:center;">
-<thead>
-<tr><th>功能</th><th>说明</th></tr>
-</thead>
-<tbody>
-<tr><td>广普发音词典补丁</td><td>15 个粤字（系/嘅/唔/咩/㗎…）按广普读音念</td></tr>
-<tr><td>普通话自动转广普</td><td>是→系、没有→冇、什么→乜嘢…，浓度可调可关</td></tr>
-<tr><td>批量合成</td><td>台词文件 → 逐句 mp3</td></tr>
-<tr><td>WebUI</td><td>浏览器一站式：合成 / 批量 / 环境检测 / 训练（全流程）/ 历史 / 设置</td></tr>
-<tr><td>定稿配方</td><td>轻中浓度 + 自然语气（temperature 0.95 / 64 扩散步）</td></tr>
-<tr><td>Docker 双仓库</td><td>推送 GitHub 自动构建，GHCR + Docker Hub 双镜像</td></tr>
-</tbody>
-</table>
+## 声音使用边界
 
-## 技术栈
+- **只使用自己的声音，或已取得明确授权的配音演员/版权方声音。**
+- 不做无授权声线爬取，不克隆动漫角色、公众人物或第三方配音演员。
+- 商用输出必须有 `license_id`、授权范围和可验证记录。
+- 声纹属于敏感个人信息；训练和商用前必须取得单独同意。
 
-<table align="center" style="width:100%;text-align:center;">
-<thead>
-<tr><th>技术</th><th>用途</th></tr>
-</thead>
-<tbody>
-<tr><td><a href="https://github.com/RVC-Boss/GPT-SoVITS">GPT-SoVITS</a> v2Pro</td><td>语音合成引擎：底模 / 训练 / 推理</td></tr>
-<tr><td>Python 3.10</td><td>运行环境</td></tr>
-<tr><td>PyTorch 2.6 + CUDA 12</td><td>深度学习框架（Windows CUDA 12.6 / Linux 12.1）</td></tr>
-<tr><td><a href="https://github.com/SYSTRAN/faster-whisper">faster-whisper</a></td><td>录音自动识别（训练标注）</td></tr>
-<tr><td><a href="https://vuejs.org/">Vue 3</a> + <a href="https://fastapi.tiangolo.com/">FastAPI</a></td><td>WebUI 界面与本地 API</td></tr>
-<tr><td>soundfile + ffmpeg</td><td>音频读写与 mp3 转码</td></tr>
-<tr><td>Docker + GitHub Actions</td><td>镜像自动构建，双推 GHCR / Docker Hub</td></tr>
-</tbody>
-</table>
+---
 
-## 文档
-
-<table align="center" style="width:100%;text-align:center;">
-<thead>
-<tr><th>文档</th><th>内容</th></tr>
-</thead>
-<tbody>
-<tr><td><a href="docs/USAGE_GUIDE.md">使用手册</a></td><td>一键安装 / 命令行合成 / Docker / 环境变量 / FAQ</td></tr>
-<tr><td><a href="docs/TRAINING_GUIDE.md">训练指南</a></td><td>录音 → 切片识别 → 校对 → 训练 → 验收（命令带注释）</td></tr>
-<tr><td><a href="docs/WEBUI_GUIDE.md">WebUI 指南</a></td><td>页面详解 / 配置优先级 / WebUI FAQ</td></tr>
-</tbody>
-</table>
-
-## 许可证
+## License
 
 MIT © 2026 MouYuc
 
