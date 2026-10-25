@@ -1,6 +1,6 @@
 # 像话新架构：音色、发音、韵律、口音四分离
 
-> 状态：架构草案 v0.1
+> 状态：架构草案 v0.2；阶段 0/1 已完成，首轮 MVP 已验证
 > 更新时间：2026-10-17
 > 适用范围：所有后续 TTS、训练、Voice Builder、B2B API 与授权账本工作
 
@@ -84,6 +84,13 @@ Text
 - 不依赖目标音频；
 - 改字典不需要重训音色。
 
+当前实现（`backend/services/core.py`）：
+
+- `render_with_plan()` 是唯一的 plan 构建入口，`render_synthesis_text()` 只是取它的 `rendered_text`；
+- 每句合成结果的 `output["pronunciation"]` 带完整的 `plan.to_dict()`；
+- 每次合成在输出目录写 `pronunciation.json`（`schema_version` / `accent_level` / `lexicon_id` / `accent_pack_id` / `accent_intensity` / `protected_terms` / `lines`），不依赖 job 快照也能审计“到底把什么文本送进了引擎”；
+- manifest 写失败只记录 `pronunciation_manifest_error`，不会让整次合成失败。
+
 ### 3.2 VoiceCard
 
 角色声线资产。只有音色部分来自目标音频。
@@ -156,8 +163,12 @@ Text
 ```json
 {
   "asset_id": "asset_001",
-  "source_type": "self_recorded",
+  "source_type": "natural_speech_upload",
   "source_id": "local_upload",
+  "source_audio": "source.wav",
+  "auto_segments": 24,
+  "selected_prompt": {"start": 12.4, "end": 18.6, "text": "自动识别的参考文本"},
+  "transcription_source": "faster-whisper-large-v3",
   "license_id": "lic_001",
   "consent_id": "consent_001",
   "territory": "CN",
@@ -171,9 +182,29 @@ Text
 
 ## 4. 数据分工
 
+### 4.0 输入与采集原则（2026-10-17 修正）
+
+用户只提供**一段正常的自然说话音频**，不提供训练脚本、不补录口音、不手工逐字转写。
+
+```text
+自然说话音频（已有素材）
+  → 自动 VAD / 说话人检测
+  → 自动切片
+  → 自动 ASR
+  → 质量门禁
+  → 自动选 2–10 秒参考片段
+  → VoiceAsset（音色资产）
+```
+
+- 用户不需要照读台词本，也不需要为“清晰普通话/轻中浓口音”额外录音；
+- 系统自动识别文本；只有明显错字才需要可选修正；
+- 目标音频只进入音色资产与音色 adapter 的数据流；
+- 发音、韵律、口音分别来自字典、底座和 accent pack，不从目标音频补采；
+- 无授权素材不进入自动建档流程。
+
 ### 4.1 音色数据
 
-- 目标说话人的音频；
+- 一段自然说话录音（访谈、播客、会议、语音备忘、已授权配音等）；系统自动切片，不要求照稿重录；
 - 只训练 speaker encoder / timbre adapter；
 - 需要覆盖不同音高、语速、情绪；
 - 做信道/噪声增强，避免把麦克风和房间学进去；
@@ -289,14 +320,14 @@ manifest 必须带：
 
 ## 8. 从当前 GPT-SoVITS 迁移
 
-### 阶段 0：清晰优先（已完成配置）
+### 阶段 0：清晰优先（已完成配置与基线验证）
 
 - 底模 v2Pro + 清晰参考音；
 - 关闭自动广普替换；
 - 先保证可懂度；
 - 不重训。
 
-### 阶段 1：发音层外置
+### 阶段 1：发音层外置（MVP 已完成）
 
 - 把 `tools/rules.py` 改成 `off / light / medium / heavy`；
 - 建立 `PronunciationPlan`；
@@ -308,6 +339,7 @@ manifest 必须带：
 
 - 冻结内容/韵律骨干；
 - 只训练 speaker encoder / adapter；
+- 训练切片由系统从自然录音自动切片/转写，不要求用户补录台词本；
 - 目标音频只参与音色目标；
 - 加增强/对抗，减少口音、信道、韵律泄漏。
 
@@ -324,14 +356,21 @@ manifest 必须带：
 
 | 当前文件 | 角色 | 新架构中的处理 |
 |---|---|---|
-| `backend/services/core.py` | 合成核心/模型加载 | 保留，外面包 PronunciationPlan |
+| `backend/services/core.py` | 合成核心/模型加载 | 保留，外面包 PronunciationPlan；已把 plan 写入 `pronunciation.json` |
 | `backend/services/voice_selection.py` | 声音档案/口音包 | 升级为 VoiceCard/AccentPack |
-| `tools/rules.py` | 文本替换 | 改为档位化、保护固定搭配 |
+| `tools/rules.py` | 文本替换 | 已改为档位化、保护固定搭配（仅保留 `to_lightmid` 兼容入口） |
 | `GPT_SoVITS/text/chinese2.py` | G2P 补丁 | 逐步外置到字典，不再依赖重训 |
+| `backend/services/media_ingest.py` | 媒体上传、切片、QC、数据集导出 | 新增；训练前采集入口；分析结果按 `run_id` 只增不删 |
+| `backend/services/media_diarization.py` | VAD、说话人聚类、句级切片 | 新增；默认不做音源分离 |
+| `backend/services/gpu_arbiter.py` | 进程级 GPU 租约 | 新增；合成/训练/分析/音色共用，避免换权重与 OOM |
+| `backend/services/job_registry.py` | 五套任务状态的只读聚合 | 新增；`/api/jobs` 统一查询与取消 |
+| `frontend/src/views/WorkshopView.vue` | WebUI 声音工作坊 | 采集随前端重构并入声音库五步引导流（上传素材/选说话人/校对/训练/完成）；旧独立采集页已移除 |
 | `scripts/run_dataset_prep.py` | 特征准备 | 保留，增加数据分流 |
 | `scripts/run_training_chain.py` | s1/s2 训练 | 改为 recipe/Managed Training |
 | `scripts/verify_training_loop.py` | 训练验收 | 增加解耦交换测试 |
 | `backend/services/reference_audio.py` | 参考音质检 | 保留，更新阈值与注释 |
+| `backend/services/voice_ingest.py` | 单音频自动切片/ASR/选参考片段 | 新增；用户只上传一段自然说话音频；支持进度回调 |
+| `backend/services/voice_prepare_jobs.py` | 单音频自动建档的异步 job | 新增；避免长录音阻塞 HTTP，前端轮询进度 |
 | `third_party/knn-vc/` | 音色转换 | 暂留，作为 timbre 候选/对照 |
 
 ---
@@ -340,6 +379,7 @@ manifest 必须带：
 
 - 不做无授权声线爬取；
 - 不把目标音频用于发音/韵律训练；
+- 不要求用户照读台词本或补录特定口音；
 - 不做全量 fine-tune 作为默认路径；
 - 不在 TTS 可懂度过线前做 API 平台化；
 - 不先做 marketplace；
@@ -347,10 +387,39 @@ manifest 必须带：
 
 ---
 
-## 11. 下一步
+## 11. MVP 验证结果（2026-10-17）
 
-1. 建 20 句回归集；
-2. 写 `PronunciationPlan` 与档位化口音规则；
-3. 给参考音/文本加配对校验；
-4. 跑清晰优先基线；
-5. 再决定音色 adapter 的具体模型路线。
+已完成：
+
+- 20 句固定回归集，覆盖 clear / technical / light / medium / heavy；
+- `off / light / medium / heavy` 四档 `PronunciationPlan`，固定搭配在渲染时保护；
+- 参考音/文本配对查询、WebUI 自动带出与合成前拒绝明显不匹配；
+- 单音频自动建档已异步化：`POST /api/reference-audio/prepare` 立即返回 job，切片/质检/ASR 在后台线程跑，前端按阶段轮询；
+- `PronunciationPlan` 已持久化：每句 output 带 `pronunciation`，输出目录写 `pronunciation.json`；
+- 清晰优先基线真实跑通，20/20 输出成功，0 削波、0 可疑短音频。
+
+关键数据：
+
+| 组 | CER 均值 | SECS 均值 |
+|---|---:|---:|
+| clear | 3.12% | 0.7601 |
+| technical | 0.00% | 0.7680 |
+| light | 16.09% | 0.7783 |
+| medium | 22.46% | 0.7974 |
+| heavy | 31.18% | 0.8091 |
+
+解释：口音变重时 SECS 没有下降，CER 明显上升。SECS 单独不能作为验收指标；浓口音必须作为独立 accent/style 数据，而不是音色模型的一部分。
+
+同文本四档交换（只改口音、不换文本/音色）：CER 3.33% / 3.45% / 13.79% / 20.69%，SECS 0.805 / 0.801 / 0.779 / 0.795；同样指向“口音变重、音色稳定、可懂度下降”。
+
+完整记录见 `docs/MVP_VALIDATION.md`。
+
+---
+
+## 12. 下一步
+
+1. ~~用一段已有自然说话音频跑通自动建档，不要求用户补录台词本；~~ **已完成（2026-10-25）**：本人 10.4 秒真实录音端到端跑通，20 句回归 20/20。
+2. 训练只做音色 adapter/轻量适配，口音/韵律/发音继续独立。
+3. 用同一套 20 句重跑，目标 clear/technical CER 稳定在 5% 以下（当前本人声音：clear 7.81% / technical 3.93%，最大变量是参考音电平）。
+4. ~~把同文本四档口音交换测试纳入固定回归，再做换音色、换信道测试。~~ **交换已纳入（2026-10-25）**：`tts_regression.py` 默认带 `swap` 节，`--no-swap` 跳过；`--voice-card`（可重复）按 VoiceCard 跑整套，两卡同跑即"换音色不换发音"；换信道测试待补。
+5. 最后决定音色 adapter 的具体模型路线。

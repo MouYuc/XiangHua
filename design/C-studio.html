@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>像话 · 设计稿 C2（工作台）</title>
+<style>
+  /* ===== 设计语言：shadcn 式近单色 · 细边框 · 黑主按钮 · 波形母题 · 高密度 ===== */
+  :root{
+    --bg:#FAFAFA; --surface:#FFFFFF; --surface2:#F4F4F5; --surface3:#EFEFF1;
+    --border:#E4E4E7; --border2:#D4D4D8;
+    --text:#18181B; --text2:#71717A; --text3:#A1A1AA;
+    --primary:#18181B; --primary-hover:#3F3F46; --on-primary:#FAFAFA;
+    --ok:#15803D; --ok-bg:#F0FDF4; --ok-bd:#DCFCE7;
+    --warn:#B45309; --warn-bg:#FFFBEB; --warn-bd:#FEF3C7;
+    --err:#B91C1C; --err-bg:#FEF2F2; --err-bd:#FECACA;
+    --r:8px; --rs:6px;
+    --pop-shadow:0 10px 38px -10px rgba(0,0,0,.22), 0 0 0 1px var(--border);
+    --font:"Inter","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,monospace;
+  }
+  html[data-theme="dark"]{
+    --bg:#09090B; --surface:#101012; --surface2:#1C1C1F; --surface3:#242428;
+    --border:#26262A; --border2:#3F3F46;
+    --text:#FAFAFA; --text2:#A1A1AA; --text3:#71717A;
+    --primary:#FAFAFA; --primary-hover:#D4D4D8; --on-primary:#18181B;
+    --ok:#4ADE80; --ok-bg:#0C1F14; --ok-bd:#14532D;
+    --warn:#FBBF24; --warn-bg:#211A05; --warn-bd:#713F12;
+    --err:#F87171; --err-bg:#250B0B; --err-bd:#7F1D1D;
+    --pop-shadow:0 10px 38px -10px rgba(0,0,0,.7), 0 0 0 1px var(--border);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased}
+  body{background:var(--bg);color:var(--text);font:13.5px/1.6 var(--font)}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  button:focus-visible,input:focus-visible{outline:2px solid var(--text2);outline-offset:1px;border-radius:4px}
+  svg.ic{width:16px;height:16px;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;fill:none;flex:none}
+  svg.ic.sm{width:14px;height:14px}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  ::placeholder{color:var(--text3)}
+
+  .proto-strip{background:var(--surface2);border-bottom:1px solid var(--border);color:var(--text2);font-size:12px;padding:5px 20px;text-align:center}
+  .proto-strip b{color:var(--text);font-weight:600}
+
+  /* ===== 骨架 ===== */
+  .app{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+  .side{border-right:1px solid var(--border);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+  .brand{display:flex;align-items:center;gap:8px;padding:14px 16px 12px}
+  .brand-mark{width:25px;height:25px;border-radius:6px;background:var(--primary);color:var(--on-primary);display:grid;place-items:center;font-size:12.5px;font-weight:700}
+  .brand b{font-size:14px;letter-spacing:.2px}
+  .side-nav{padding:2px 10px;display:flex;flex-direction:column;gap:1px}
+  .side-nav button{display:flex;align-items:center;gap:9px;padding:6px 9px;border-radius:var(--rs);color:var(--text2);font-size:13px;text-align:left}
+  .side-nav button:hover{background:var(--surface2);color:var(--text)}
+  .side-nav button.active{background:var(--surface2);color:var(--text);font-weight:550}
+  .side-nav .n{margin-left:auto;font-size:10.5px;color:var(--text3)}
+  .side-foot{margin-top:auto;padding:8px;border-top:1px solid var(--border)}
+  .eng{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border-radius:var(--rs);font-size:11.5px;color:var(--text2)}
+  .eng:hover{background:var(--surface2)}
+  .eng .st{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+  .side-foot-row{display:flex;align-items:center;gap:2px;padding:2px 4px 0}
+  .icon-btn{width:28px;height:28px;border-radius:var(--rs);display:grid;place-items:center;color:var(--text2)}
+  .icon-btn:hover{background:var(--surface2);color:var(--text)}
+
+  .main{display:flex;flex-direction:column;min-width:0}
+  .topbar{display:flex;align-items:center;gap:8px;height:48px;padding:0 16px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:40;background:var(--bg)}
+  .crumb{font-size:13px;font-weight:550;display:flex;align-items:center;gap:8px}
+  .autosave{font-size:11px;color:var(--text3)}
+  .top-right{margin-left:auto;display:flex;align-items:center;gap:5px}
+  .task-btn{display:flex;align-items:center;gap:6px;height:28px;padding:0 9px;border-radius:var(--rs);border:1px solid var(--border);background:var(--surface);font-size:12px;color:var(--text2)}
+  .task-btn:hover{border-color:var(--border2);color:var(--text)}
+  .task-btn .b{min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--primary);color:var(--on-primary);font:650 9.5px var(--mono);display:grid;place-items:center}
+  .kmd-btn{display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:var(--rs);border:1px solid var(--border);background:var(--surface);font-size:11.5px;color:var(--text3)}
+  .kmd-btn:hover{color:var(--text);border-color:var(--border2)}
+  .kmd-btn kbd{font-family:var(--mono)}
+  kbd{font-size:10px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 4px;color:var(--text2);background:var(--surface2)}
+  .avatar-me{width:25px;height:25px;border-radius:50%;background:var(--surface3);border:1px solid var(--border);display:grid;place-items:center;font-size:10.5px;font-weight:600;color:var(--text2);margin-left:4px}
+
+  /* ===== 任务下拉 ===== */
+  .task-pop{position:fixed;top:52px;right:14px;width:352px;background:var(--surface);border-radius:10px;box-shadow:var(--pop-shadow);padding:5px;display:none;z-index:70}
+  .task-pop.open{display:block}
+  .task-pop .h{font-size:10.5px;font-weight:600;color:var(--text3);letter-spacing:.4px;padding:7px 9px 4px}
+  .task-row{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--rs)}
+  .task-row:hover{background:var(--surface2)}
+  .task-ic{width:26px;height:26px;border-radius:6px;background:var(--surface2);border:1px solid var(--border);display:grid;place-items:center;color:var(--text2)}
+  .task-t{flex:1;min-width:0}
+  .task-t b{display:block;font-size:12px;font-weight:550}
+  .task-t span{font-size:11px;color:var(--text3)}
+  .task-bar{height:3px;border-radius:2px;background:var(--surface3);margin-top:4px;overflow:hidden}
+  .task-bar span{display:block;height:100%;background:var(--text2);border-radius:2px}
+  .task-x{font-size:11px;color:var(--text3);padding:3px 6px;border-radius:4px}
+  .task-x:hover{background:var(--err-bg);color:var(--err)}
+
+  /* ===== 通用控件（组件词汇：Badge / Button / Card / Progress / Segmented / Switch） ===== */
+  .btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:34px;padding:0 16px;border-radius:var(--rs);background:var(--primary);color:var(--on-primary);font-size:12.5px;font-weight:600}
+  .btn-primary:hover{background:var(--primary-hover)}
+  .btn-primary:disabled{opacity:.45;cursor:default}
+  .btn-secondary{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:var(--rs);border:1px solid var(--border);background:var(--surface);font-size:12px;font-weight:500;color:var(--text)}
+  .btn-secondary:hover{border-color:var(--border2);background:var(--surface2)}
+  .btn-ghost{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 7px;border-radius:var(--rs);font-size:12px;color:var(--text2)}
+  .btn-ghost:hover{background:var(--surface2);color:var(--text)}
+  .mini{height:26px;padding:0 10px;border-radius:var(--rs);border:1px solid var(--border);background:var(--surface);font-size:11.5px;font-weight:500;color:var(--text);display:inline-flex;align-items:center;gap:5px}
+  .mini:hover{border-color:var(--border2);background:var(--surface2)}
+  .mini.dark{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
+  .mini.dark:hover{background:var(--primary-hover)}
+  .tag{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:550;padding:1px 7px;border-radius:5px;white-space:nowrap}
+  .tag.ok{color:var(--ok);background:var(--ok-bg);border:1px solid var(--ok-bd)}
+  .tag.warn{color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn-bd)}
+  .tag.err{color:var(--err);background:var(--err-bg);border:1px solid var(--err-bd)}
+  .tag.mut{color:var(--text2);background:var(--surface2);border:1px solid var(--border)}
+  .seg{display:flex;border:1px solid var(--border);border-radius:var(--rs);overflow:hidden;background:var(--surface)}
+  .seg button{flex:1;padding:5px 0;font-size:11.5px;color:var(--text2);border-left:1px solid var(--border)}
+  .seg button:first-child{border-left:none}
+  .seg button.on{background:var(--surface3);color:var(--text);font-weight:550}
+  .radio-row{display:flex;align-items:flex-start;gap:8px;padding:7px 9px;border:1px solid var(--border);border-radius:var(--rs);cursor:pointer;text-align:left;width:100%}
+  .radio-row.on{border-color:var(--text)}
+  .radio-row .dot2{width:13px;height:13px;border-radius:50%;border:1.5px solid var(--border2);margin-top:2px;flex:none;display:grid;place-items:center}
+  .radio-row.on .dot2::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--primary)}
+  .radio-row b{font-size:12px;font-weight:550;display:block}
+  .radio-row span.d{font-size:11px;color:var(--text3);line-height:1.5}
+  .toggle{width:32px;height:19px;border-radius:10px;background:var(--surface3);border:1px solid var(--border);position:relative;flex:none}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:var(--text3);transition:.15s}
+  .toggle.on{background:var(--primary);border-color:var(--primary)}
+  .toggle.on::after{left:15px;background:var(--on-primary)}
+  .wave{display:flex;align-items:center;gap:2px;min-width:40px}
+  .wave i{flex:1;border-radius:1px;background:var(--surface3);min-width:1.5px;min-height:2px}
+  .wave i.on{background:var(--text2)}
+  .play{width:26px;height:26px;border-radius:50%;border:1px solid var(--border2);background:var(--surface);display:grid;place-items:center;color:var(--text);flex:none}
+  .play:hover{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
+
+  /* ===== 工作台 ===== */
+  .wb{display:grid;grid-template-columns:1fr 300px;align-items:stretch}
+  .canvas-wrap{padding:18px 24px 0;max-width:820px;border-right:1px solid var(--border);display:flex;flex-direction:column;min-width:0}
+  .stage{position:relative;border:1px solid var(--border);border-radius:10px;background:var(--surface);display:flex;flex-direction:column;align-self:flex-start;width:100%}
+  .plus{position:absolute;width:11px;height:11px;color:var(--border2)}
+  .plus::before,.plus::after{content:"";position:absolute;background:currentColor}
+  .plus::before{left:5px;top:0;width:1px;height:11px}
+  .plus::after{left:0;top:5px;width:11px;height:1px}
+  .plus.tl{left:-6px;top:-6px}.plus.tr{right:-6px;top:-6px}.plus.bl{left:-6px;bottom:-6px}.plus.br{right:-6px;bottom:-6px}
+  .stage-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border)}
+  .stage-head .t{font-size:12px;color:var(--text3)}
+  .stage-head .r{margin-left:auto;display:flex;gap:2px}
+  .line{padding:11px 14px;border-bottom:1px solid var(--border)}
+  .line:last-of-type{border-bottom:none}
+  .line:hover{background:var(--surface2)}
+  .line .no{display:flex;gap:8px;align-items:center;margin-bottom:3px}
+  .line .no .idx{font:11px var(--mono);color:var(--text3)}
+  .line .txt{font-size:14px;line-height:1.7;color:var(--text)}
+  .line .txt .lang{color:var(--text2);background:var(--surface3);border-radius:4px;padding:0 5px;font-size:12.5px}
+  .audio-strip{display:flex;align-items:center;gap:9px;margin-top:7px}
+  .line-acts{display:flex;gap:1px;opacity:0;transition:opacity .12s}
+  .line:hover .line-acts{opacity:1}
+  .line-acts button{width:24px;height:24px;border-radius:5px;display:grid;place-items:center;color:var(--text3)}
+  .line-acts button:hover{background:var(--surface3);color:var(--text)}
+  .gen-progress{flex:1;height:3px;border-radius:2px;background:var(--surface3);overflow:hidden;position:relative}
+  .gen-progress span{position:absolute;inset:0;width:64%;background:var(--text2);border-radius:2px}
+  .gen-progress::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,var(--surface),transparent);animation:sh 1.2s infinite}
+  @keyframes sh{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+  .add-line{display:flex;align-items:center;gap:8px;width:100%;padding:10px 14px;color:var(--text3);font-size:12.5px;border-bottom:1px solid var(--border)}
+  .add-line:hover{color:var(--text);background:var(--surface2)}
+  .canvas-foot{display:flex;align-items:center;gap:10px;padding:10px 2px 12px}
+  .foot-meta{font-size:11.5px;color:var(--text3);display:flex;gap:10px;align-items:center}
+  .foot-meta button{color:var(--text2);font-size:11.5px}
+  .foot-meta button:hover{color:var(--text);text-decoration:underline}
+
+  /* 检查器 */
+  .inspector{display:flex;flex-direction:column;position:sticky;top:48px;height:calc(100vh - 48px);overflow:auto}
+  .ins-pad{padding:16px;display:flex;flex-direction:column;gap:14px;flex:1}
+  .ins-sec .h{font-size:10.5px;font-weight:600;color:var(--text3);letter-spacing:.5px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between}
+  .voice-pick{display:flex;align-items:center;gap:9px;width:100%;padding:9px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);text-align:left}
+  .voice-pick:hover{border-color:var(--border2);background:var(--surface2)}
+  .v-avatar{width:30px;height:30px;border-radius:6px;background:var(--surface2);border:1px solid var(--border);display:grid;place-items:center;font-size:12px;font-weight:600;color:var(--text2);flex:none}
+  .v-avatar.dk{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
+  .voice-pick .t{flex:1;min-width:0}
+  .voice-pick .t b{display:block;font-size:12.5px;font-weight:550}
+  .voice-pick .t span{font-size:11px;color:var(--text3)}
+  .ins-gen{border-top:1px solid var(--border);padding:12px 16px;background:var(--bg)}
+  .disc{border-top:1px solid var(--border);padding-top:10px}
+  .disc .hd{display:flex;align-items:center;gap:5px;width:100%;font-size:11.5px;color:var(--text2)}
+  .disc .hd:hover{color:var(--text)}
+  .disc .hd .chev{margin-left:auto;transition:.15s}
+  .disc.open .hd .chev{transform:rotate(90deg)}
+  .disc .bd{display:none;padding-top:8px}
+  .disc.open .bd{display:block}
+  .param{display:flex;align-items:center;gap:9px;padding:4px 0}
+  .param .k{font-size:11.5px;color:var(--text2);width:64px;flex:none}
+  .param .v{font:11px var(--mono);color:var(--text);width:40px;text-align:right;flex:none}
+  .track{flex:1;height:3px;border-radius:2px;background:var(--surface3);position:relative}
+  .track .fill{position:absolute;left:0;top:0;height:100%;border-radius:2px;background:var(--text2)}
+  .track .knob{position:absolute;top:50%;width:10px;height:10px;border-radius:50%;background:var(--surface);border:1.5px solid var(--text2);transform:translate(-50%,-50%)}
+
+  /* ===== 声音库 ===== */
+  .page-wrap{padding:18px 24px;max-width:1020px}
+  .page-h{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:14px}
+  .page-h h1{font-size:17px;font-weight:650;letter-spacing:-.2px}
+  .page-h .sub{font-size:12.5px;color:var(--text3);margin-top:2px}
+  .toolbar{display:flex;align-items:center;gap:6px;margin-bottom:12px}
+  .search{display:flex;align-items:center;gap:7px;height:30px;padding:0 10px;border:1px solid var(--border);border-radius:var(--rs);background:var(--surface);width:230px;color:var(--text3)}
+  .search input{border:none;outline:none;background:none;font:inherit;font-size:12.5px;color:var(--text);width:100%}
+  .filter-chip{height:26px;padding:0 10px;border-radius:var(--rs);font-size:11.5px;color:var(--text2);border:1px solid transparent}
+  .filter-chip:hover{background:var(--surface2);color:var(--text)}
+  .filter-chip.on{background:var(--surface3);color:var(--text);font-weight:550}
+  .vgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .vcard{border:1px solid var(--border);border-radius:var(--r);background:var(--surface);padding:12px 13px;display:flex;flex-direction:column;gap:9px}
+  .vcard:hover{border-color:var(--border2)}
+  .vcard .top{display:flex;align-items:center;gap:9px}
+  .vcard .top b{font-size:13px;font-weight:600;display:block}
+  .vcard .top span{font-size:11px;color:var(--text3)}
+  .vcard .wave{height:24px}
+  .vcard .meta{display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--text3);flex-wrap:wrap}
+  .vcard .acts{display:flex;gap:5px;align-items:center}
+  .tool-duo{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+  .tool-card{border:1px solid var(--border);border-radius:var(--r);background:var(--surface);padding:14px 15px}
+  .tool-card h3{font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .tool-card p{font-size:11.5px;color:var(--text3);margin-top:4px;line-height:1.6}
+
+  /* ===== 表格（记录页） ===== */
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{font:600 10px var(--font);letter-spacing:.6px;text-transform:uppercase;color:var(--text3);text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+  td{padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text)}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:var(--surface2)}
+  td .txt2{display:block;max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  td.off{opacity:.5}
+
+  /* ===== 弹窗 ===== */
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:60;display:none;align-items:flex-start;justify-content:center;padding-top:10vh}
+  .overlay.open{display:flex}
+  html[data-theme="dark"] .overlay{background:rgba(0,0,0,.62)}
+  .modal{width:500px;background:var(--surface);border-radius:12px;box-shadow:var(--pop-shadow);overflow:hidden}
+  .modal .mh{padding:14px 18px 0}
+  .modal .mh h2{font-size:14px;font-weight:650}
+  .modal .mh p{font-size:12px;color:var(--text3);margin-top:2px}
+  .modal .mb{padding:12px 18px 16px;display:flex;flex-direction:column;gap:7px}
+  .opt{display:flex;align-items:flex-start;gap:11px;padding:11px 12px;border:1px solid var(--border);border-radius:var(--r);text-align:left;width:100%}
+  .opt:hover{border-color:var(--border2);background:var(--surface2)}
+  .opt .oi{width:30px;height:30px;border-radius:6px;background:var(--surface2);border:1px solid var(--border);display:grid;place-items:center;color:var(--text2);flex:none}
+  .opt b{font-size:12.5px;font-weight:600;display:block}
+  .opt span.d{font-size:11.5px;color:var(--text3);line-height:1.55;display:block;margin-top:1px}
+  .opt .go{margin-left:auto;color:var(--text3);align-self:center}
+  .modal .mf{border-top:1px solid var(--border);padding:10px 18px;font-size:11.5px;color:var(--text3);display:flex;justify-content:space-between;align-items:center}
+
+  /* ⌘K 命令面板 */
+  .cmdk{width:540px;background:var(--surface);border-radius:12px;box-shadow:var(--pop-shadow);overflow:hidden}
+  .cmdk .in{display:flex;align-items:center;gap:9px;padding:13px 16px;border-bottom:1px solid var(--border)}
+  .cmdk .in input{flex:1;border:none;outline:none;background:none;font:inherit;font-size:14px;color:var(--text)}
+  .cmdk .list{max-height:340px;overflow:auto;padding:6px}
+  .cmdk .sec{font:600 10px var(--font);letter-spacing:.6px;text-transform:uppercase;color:var(--text3);padding:8px 10px 3px}
+  .cmdk .it{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border-radius:var(--rs);font-size:13px;text-align:left}
+  .cmdk .it:hover,.cmdk .it.sel{background:var(--surface2)}
+  .cmdk .it .d{margin-left:auto;font-size:11px;color:var(--text3)}
+  .cmdk .ft{border-top:1px solid var(--border);padding:8px 14px;font-size:11px;color:var(--text3);display:flex;gap:14px}
+
+  /* ===== 向导/工作坊 ===== */
+  .flow{max-width:640px;margin:0 auto;padding:20px 20px 50px}
+  .backlink{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);margin-bottom:10px}
+  .backlink:hover{color:var(--text)}
+  .flow-steps{display:flex;align-items:center;gap:7px;margin-bottom:16px;font-size:11.5px;color:var(--text3);flex-wrap:wrap}
+  .flow-steps .s{display:flex;align-items:center;gap:5px}
+  .flow-steps .s.done{color:var(--text2)}
+  .flow-steps .s.cur{color:var(--text);font-weight:550}
+  .flow-steps .n{width:16px;height:16px;border-radius:50%;border:1px solid var(--border2);display:grid;place-items:center;font:600 9.5px var(--mono);color:var(--text3)}
+  .flow-steps .s.done .n{background:var(--surface3);border-color:var(--surface3);color:var(--text2)}
+  .flow-steps .s.cur .n{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+  .flow-steps .ln{width:16px;height:1px;background:var(--border)}
+  .panel{border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:14px 16px;margin-bottom:10px}
+  .panel h3{font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .panel .ph{font-size:12px;color:var(--text3);margin-top:2px}
+  .check-row{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+  .check-row:last-child{border-bottom:none}
+  .check-row .ci{width:17px;height:17px;border-radius:50%;display:grid;place-items:center;flex:none;font-size:9.5px}
+  .check-row .ci.ok{background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok-bd)}
+  .check-row .ci.run{background:var(--surface2);color:var(--text2);border:1px solid var(--border);animation:pulse 1.4s infinite}
+  @keyframes pulse{50%{opacity:.5}}
+  .check-row .r{margin-left:auto;font:11px var(--mono);color:var(--text3)}
+  .qc-row{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:12.5px;border-bottom:1px solid var(--border)}
+  .qc-row:last-child{border-bottom:none}
+  .qc-row .v{margin-left:auto;font:11px var(--mono);color:var(--text2)}
+  .note{display:flex;gap:8px;font-size:11.5px;color:var(--text2);background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:8px 11px;line-height:1.6}
+  .input-line{display:flex;align-items:center;gap:8px}
+  .input-line input{flex:1;height:32px;border:1px solid var(--border);border-radius:var(--rs);background:var(--surface);padding:0 11px;font:inherit;font-size:12.5px;color:var(--text);outline:none}
+  .input-line input:focus{border-color:var(--text2)}
+  .spk-card{border:1px solid var(--border);border-radius:var(--r);padding:12px 13px;cursor:pointer;background:var(--surface);text-align:left}
+  .spk-card.on{border-color:var(--text);box-shadow:0 0 0 1px var(--text)}
+  .spk-card .wave{height:24px;margin-top:9px}
+  .loss{width:100%;height:64px;display:block}
+  .stat-row{display:flex;gap:0;border:1px solid var(--border);border-radius:var(--rs);overflow:hidden;margin-top:10px}
+  .stat-row>div{flex:1;text-align:center;padding:8px 4px;border-left:1px solid var(--border)}
+  .stat-row>div:first-child{border-left:none}
+  .stat-row b{font:600 13px var(--mono);display:block}
+  .stat-row span{font-size:10px;color:var(--text3)}
+
+  .page{display:none}
+  .page.active{display:block}
+
+  @media (max-width:1120px){
+    .wb{grid-template-columns:1fr}
+    .inspector{position:static;height:auto;border-top:1px solid var(--border)}
+    .canvas-wrap{border-right:none;max-width:none}
+    .vgrid{grid-template-columns:1fr 1fr}
+  }
+</style>
+</head>
+<body>
+<div class="proto-strip">设计稿 <b>C2 · 工作台</b>（shadcn / ElevenLabs UI 组件语言重制版）— 高密度、多状态、⌘K 命令面板；左侧导航切换，<b>任务 / ⌘K / 新建声音 / 设置</b>可点击，侧栏底部圆点切换亮/暗</div>
+
+<div class="app">
+  <!-- 侧栏 -->
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">话</span><b>像话</b></div>
+    <nav class="side-nav">
+      <button class="active" data-page="workbench">
+        <svg class="ic sm" viewBox="0 0 24 24"><path d="M15.5 8.5a3.5 3.5 0 1 0-7 0"/><path d="M4 12h16v3a8 8 0 0 1-16 0z"/><path d="M12 3v2"/></svg>
+        工作台
+      </button>
+      <button data-page="voices">
+        <svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+        声音库<span class="n">6</span>
+      </button>
+      <button data-page="history">
+        <svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        记录
+      </button>
+    </nav>
+    <div class="side-foot">
+      <button class="eng" id="sideSettings"><span class="st"></span>引擎就绪 · v2Pro · 4.6/12 GB</button>
+      <div class="side-foot-row">
+        <button class="icon-btn" id="themeBtn" title="切换亮/暗主题">
+          <svg class="ic sm" viewBox="0 0 24 24" id="themeIcon"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <button class="icon-btn" id="settingsBtn" title="设置">
+          <svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <div class="crumb"><span id="crumb">工作台</span></div>
+      <span class="autosave" id="autosave">已自动保存 · 14:32</span>
+      <div class="top-right">
+        <button class="kmd-btn" id="cmdkBtn">搜索或跳转… <kbd>⌘K</kbd></button>
+        <button class="task-btn" id="taskBtn">
+          <svg class="ic sm" viewBox="0 0 24 24"><path d="M22 12h-4l-3 8-4-16-3 8H2"/></svg>
+          任务<span class="b">2</span>
+        </button>
+        <span class="avatar-me">Z</span>
+      </div>
+    </header>
+
+    <!-- 任务下拉 -->
+    <div class="task-pop" id="taskPop">
+      <div class="h">正在运行 · 2</div>
+      <div class="task-row">
+        <span class="task-ic"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg></span>
+        <span class="task-t"><b>合成 · 未命名项目</b><span>第 3/6 句 · <span class="mono">64%</span></span><span class="task-bar"><span style="width:64%"></span></span></span>
+      </div>
+      <div class="task-row">
+        <span class="task-ic"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></span>
+        <span class="task-t"><b>声音建档 · 老陈</b><span>语音识别中 · 约 1 分钟</span><span class="task-bar"><span style="width:72%"></span></span></span>
+      </div>
+      <div class="task-row">
+        <span class="task-ic"><svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+        <span class="task-t"><b>训练 · 晓华 s2</b><span>排队中 · 显卡正被合成占用</span></span>
+        <button class="task-x">取消</button>
+      </div>
+    </div>
+
+    <div class="content">
+    <!-- ===== 页 · 工作台 ===== -->
+    <section class="page active" id="p-workbench">
+      <div class="wb">
+        <div class="canvas-wrap">
+          <div class="stage">
+            <span class="plus tl"></span><span class="plus tr"></span><span class="plus bl"></span><span class="plus br"></span>
+            <div class="stage-head">
+              <span class="t">台词 · 一行一条，语言标记如 <span class="mono">&lt;en&gt;</span> 直接输入</span>
+              <span class="r">
+                <button class="btn-ghost"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>导入 TXT</button>
+                <button class="btn-ghost">示例台词</button>
+              </span>
+            </div>
+
+            <div class="line">
+              <div class="no"><span class="idx">01</span><span class="tag ok">已完成</span></div>
+              <div class="txt">今天天气真不错，我们出去走走吧。</div>
+              <div class="audio-strip">
+                <button class="play"><svg class="ic sm" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13l11-6.5z"/></svg></button>
+                <span class="wave" data-wave="01" data-played="100"></span>
+                <span class="mono" style="font-size:10.5px;color:var(--text3)">0:04</span>
+                <span class="line-acts">
+                  <button title="下载"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button>
+                  <button title="重新生成这一句"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+                </span>
+              </div>
+            </div>
+
+            <div class="line">
+              <div class="no"><span class="idx">02</span><span class="tag ok">已完成</span></div>
+              <div class="txt"><span class="lang">&lt;en&gt;Good morning&lt;/en&gt;</span>，各位观众晚上好，欢迎回到频道。</div>
+              <div class="audio-strip">
+                <button class="play"><svg class="ic sm" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13l11-6.5z"/></svg></button>
+                <span class="wave" data-wave="02" data-played="42"></span>
+                <span class="mono" style="font-size:10.5px;color:var(--text3)">0:07</span>
+                <span class="line-acts">
+                  <button title="下载"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button>
+                  <button title="重新生成这一句"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+                </span>
+              </div>
+            </div>
+
+            <div class="line">
+              <div class="no"><span class="idx">03</span><span class="tag mut">生成中</span></div>
+              <div class="txt">广普档位只影响读音，不会改动你的音色。</div>
+              <div class="audio-strip">
+                <span class="play" style="border-style:dashed;color:var(--text3)"><svg class="ic sm" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13l11-6.5z"/></svg></span>
+                <span class="gen-progress"><span></span></span>
+                <span class="mono" style="font-size:10.5px;color:var(--text3)">64%</span>
+              </div>
+            </div>
+
+            <div class="line" style="opacity:.62">
+              <div class="no"><span class="idx">04</span><span class="tag mut">排队中</span></div>
+              <div class="txt">显卡正被上一句占用，轮到后自动开始。</div>
+            </div>
+
+            <div class="line">
+              <div class="no"><span class="idx">05</span><span class="tag err">合成失败</span></div>
+              <div class="txt">这一段的情绪我们再收一点，别太用力。</div>
+              <div class="audio-strip">
+                <span style="font-size:11.5px;color:var(--err)">显存不足（OOM）· 已保留任务，可直接重试</span>
+                <span style="flex:1"></span>
+                <button class="mini" style="height:24px"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>重试</button>
+              </div>
+            </div>
+
+            <div class="line">
+              <div class="no"><span class="idx">06</span><span class="tag warn">时长偏短</span></div>
+              <div class="txt">嗯。</div>
+              <div class="audio-strip">
+                <button class="play"><svg class="ic sm" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13l11-6.5z"/></svg></button>
+                <span class="wave" data-wave="06" data-played="100"></span>
+                <span class="mono" style="font-size:10.5px;color:var(--text3)">0:01</span>
+                <span style="font-size:11.5px;color:var(--warn)">1.1s，疑似截断，建议改写或重试</span>
+                <span class="line-acts">
+                  <button title="下载"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button>
+                  <button title="重新生成这一句"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+                </span>
+              </div>
+            </div>
+
+            <button class="add-line"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加一行台词 · 空行自动分段</button>
+          </div>
+
+          <div class="canvas-foot">
+            <span class="foot-meta"><span>6 行 · 312 字</span><button>清空台词</button><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> 全部生成</span></span>
+            <span style="flex:1"></span>
+            <span class="foot-meta"><span class="mono">预计 ~40s</span></span>
+          </div>
+        </div>
+
+        <!-- 检查器 -->
+        <aside class="inspector">
+          <div class="ins-pad">
+            <div class="ins-sec">
+              <div class="h">声音<button class="btn-ghost" style="height:20px;font-size:11px" onclick="go('voices')">管理 →</button></div>
+              <button class="voice-pick">
+                <span class="v-avatar">晓</span>
+                <span class="t"><b>晓华 · 克隆音色</b><span>清晰度 95 · 参考 18 秒</span></span>
+                <svg class="ic sm" viewBox="0 0 24 24" style="color:var(--text3)"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+            </div>
+            <div class="ins-sec">
+              <div class="h">语言</div>
+              <div class="seg"><button class="on">自动</button><button>中</button><button>粤</button><button>EN</button><button>日</button><button>韩</button></div>
+            </div>
+            <div class="ins-sec">
+              <div class="h">广普程度</div>
+              <div class="seg"><button class="on">关</button><button>轻</button><button>中</button><button>重</button></div>
+              <p style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.6">只影响读音，不动音色；「目的」「的确」等固定搭配始终受保护。</p>
+            </div>
+            <div class="ins-sec">
+              <div class="h">参数预设</div>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <button class="radio-row on"><span class="dot2"></span><span><b>清晰优先</b><span class="d">实测可懂度最好的一组参数</span></span></button>
+                <button class="radio-row"><span class="dot2"></span><span><b>表现力优先</b><span class="d">更有情绪起伏，偶有含糊</span></span></button>
+              </div>
+            </div>
+            <div class="disc" id="advDisc">
+              <button class="hd"><svg class="ic sm chev" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>高级参数</button>
+              <div class="bd">
+                <div class="param"><span class="k">语速</span><span class="track"><span class="fill" style="width:37%"></span><span class="knob" style="left:37%"></span></span><span class="v">1.10×</span></div>
+                <div class="param"><span class="k">句间停顿</span><span class="track"><span class="fill" style="width:18%"></span><span class="knob" style="left:18%"></span></span><span class="v">0.15s</span></div>
+                <div class="param"><span class="k">温度</span><span class="track"><span class="fill" style="width:47%"></span><span class="knob" style="left:47%"></span></span><span class="v">0.95</span></div>
+                <div class="param"><span class="k">采样步数</span><span class="track"><span class="fill" style="width:52%"></span><span class="knob" style="left:52%"></span></span><span class="v">64</span></div>
+                <div class="param"><span class="k">top_p</span><span class="track"><span class="fill" style="width:88%"></span><span class="knob" style="left:88%"></span></span><span class="v">0.88</span></div>
+                <div style="display:flex;gap:6px;margin-top:8px">
+                  <button class="mini">恢复默认</button>
+                  <span style="align-self:center;font-size:10.5px;color:var(--text3)">改动自动保存，仅对本项目生效</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="ins-gen">
+            <button class="btn-primary" style="width:100%"><svg class="ic sm" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13l11-6.5z"/></svg>生成 4 句</button>
+            <p style="font-size:10.5px;color:var(--text3);margin-top:7px;text-align:center">已完成 2 句 · 失败 1 句可重试 · 显卡空闲</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ===== 页 · 声音库 ===== -->
+    <section class="page" id="p-voices">
+      <div class="page-wrap">
+        <div class="page-h">
+          <div><h1>声音库</h1><p class="sub">所有可用于合成的声音 —— 一段自然说话录音即可建档。</p></div>
+          <button class="btn-primary" id="createVoiceBtn"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新建声音</button>
+        </div>
+        <div class="toolbar">
+          <label class="search"><svg class="ic sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input placeholder="搜索声音…"></label>
+          <button class="filter-chip on">全部 · 6</button>
+          <button class="filter-chip">克隆 · 4</button>
+          <button class="filter-chip">系统 · 2</button>
+          <span style="flex:1"></span>
+          <button class="icon-btn" title="网格视图"><svg class="ic sm" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
+          <button class="icon-btn" title="列表视图"><svg class="ic sm" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg></button>
+        </div>
+        <div class="vgrid">
+          <div class="vcard">
+            <div class="top"><span class="v-avatar">晓</span><span style="flex:1;min-width:0"><b>晓华</b><span>克隆 · 10-22 建档</span></span><span class="tag ok">可用</span></div>
+            <span class="wave" data-wave="11"></span>
+            <div class="meta"><span>清晰度 95</span><span>·</span><span>参考 18 秒</span><span>·</span><span>zh / en</span></div>
+            <div class="acts"><button class="mini dark">用于合成</button><button class="mini">试听</button><button class="mini" style="padding:0 7px">⋯</button></div>
+          </div>
+          <div class="vcard">
+            <div class="top"><span class="v-avatar">陈</span><span style="flex:1;min-width:0"><b>老陈</b><span>克隆 · 建档中</span></span><span class="tag warn">转写 72%</span></div>
+            <span class="wave" data-wave="12" style="opacity:.55"></span>
+            <div class="meta"><span>质检通过</span><span>·</span><span>素材 5 分 44 秒</span></div>
+            <div class="acts"><button class="mini">查看进度</button></div>
+          </div>
+          <div class="vcard">
+            <div class="top"><span class="v-avatar dk">底</span><span style="flex:1;min-width:0"><b>官方底模</b><span>系统 · 未训练</span></span><span class="tag mut">通用</span></div>
+            <span class="wave" data-wave="13"></span>
+            <div class="meta"><span>通用女声</span><span>·</span><span>无需参考音</span></div>
+            <div class="acts"><button class="mini dark">用于合成</button><button class="mini">试听</button></div>
+          </div>
+          <div class="vcard">
+            <div class="top"><span class="v-avatar dk">雨</span><span style="flex:1;min-width:0"><b>小雨</b><span>系统 · 预置音色</span></span><span class="tag mut">通用</span></div>
+            <span class="wave" data-wave="14"></span>
+            <div class="meta"><span>年轻女声</span><span>·</span><span>适合旁白</span></div>
+            <div class="acts"><button class="mini dark">用于合成</button><button class="mini">试听</button></div>
+          </div>
+          <div class="vcard">
+            <div class="top"><span class="v-avatar">旁</span><span style="flex:1;min-width:0"><b>旁白君</b><span>克隆 · 10-20 建档</span></span><span class="tag ok">可用</span></div>
+            <span class="wave" data-wave="15"></span>
+            <div class="meta"><span>清晰度 88</span><span>·</span><span>en 为主</span><span>·</span><span>纪录片素材</span></div>
+            <div class="acts"><button class="mini dark">用于合成</button><button class="mini">试听</button><button class="mini" style="padding:0 7px">⋯</button></div>
+          </div>
+          <div class="vcard">
+            <div class="top"><span class="v-avatar">低</span><span style="flex:1;min-width:0"><b>低语</b><span>克隆 · 角色音</span></span><span class="tag warn">清晰度 78</span></div>
+            <span class="wave" data-wave="16"></span>
+            <div class="meta"><span>气声偏多</span><span>·</span><span>建议补充录音</span></div>
+            <div class="acts"><button class="mini dark">用于合成</button><button class="mini">试听</button><button class="mini" style="padding:0 7px">⋯</button></div>
+          </div>
+        </div>
+
+        <div class="tool-duo">
+          <div class="tool-card">
+            <h3><svg class="ic sm" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17.5" cy="9.5" r="2.5"/><path d="M15.5 14.5a5 5 0 0 1 6 4.9"/></svg>声音工作坊 <span class="tag mut">进阶</span></h3>
+            <p>多人素材分离 → 校对 → 训练微调，从「采集」到「出模」的一条引导流，不再分散在多个页面。</p>
+            <div style="margin-top:10px"><button class="btn-secondary" onclick="go('workshop')">打开工作坊 →</button></div>
+          </div>
+          <div class="tool-card">
+            <h3><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/><circle cx="12" cy="12" r="3.5"/></svg>音色转换</h3>
+            <p>把任意已配音的人声素材转成某个声音（kNN-VC）—— 适合翻唱、歌词或替换素材重新定音。</p>
+            <div style="margin-top:10px"><button class="btn-secondary">选择一个声音开始 →</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 新建声音 -->
+      <div class="overlay" id="createModal">
+        <div class="modal">
+          <div class="mh"><h2>新建声音</h2><p>选一种来源，之后全部自动处理，你只在关键结果处确认。</p></div>
+          <div class="mb">
+            <button class="opt" onclick="go('wizard')">
+              <span class="oi"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg></span>
+              <span><b>一段自然说话录音</b><span>访谈、播客、语音备忘都行 —— 自动切片、质检、转写，只需最后确认命名。</span></span>
+              <svg class="ic sm go" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+            <button class="opt" onclick="go('workshop')">
+              <span class="oi"><svg class="ic sm" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17.5" cy="9.5" r="2.5"/><path d="M15.5 14.5a5 5 0 0 1 6 4.9"/></svg></span>
+              <span><b>多人素材，分离某人声音</b><span>会议、剧里有多个说话人？自动分清谁在何时说话，选一个人建声并训练。</span></span>
+              <svg class="ic sm go" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+            <button class="opt">
+              <span class="oi"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></span>
+              <span><b>导入已训练的模型</b><span>已有 GPT-SoVITS 权重？直接导入为声音档案，立即可合成。</span></span>
+              <svg class="ic sm go" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+          </div>
+          <div class="mf"><span>所有方式都要求素材来源合法合规</span><button id="createClose" style="color:var(--text2)">取消</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 页 · 建档向导 ===== -->
+    <section class="page" id="p-wizard">
+      <div class="flow">
+        <button class="backlink" onclick="go('voices')"><svg class="ic sm" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>返回声音库</button>
+        <div class="page-h" style="margin-bottom:10px"><div><h1>从录音建档「老陈」</h1><p class="sub">你只在第 3 步确认结果并命名，其余全自动。</p></div></div>
+        <div class="flow-steps">
+          <span class="s done"><span class="n">✓</span>选择录音</span><span class="ln"></span>
+          <span class="s done"><span class="n">✓</span>自动处理</span><span class="ln"></span>
+          <span class="s cur"><span class="n">3</span>质检确认</span><span class="ln"></span>
+          <span class="s"><span class="n">4</span>命名完成</span>
+        </div>
+
+        <div class="panel">
+          <h3>自动处理已完成</h3>
+          <p class="ph">素材：老陈访谈_完整版.mp4 · 5 分 44 秒 · 权利声明：本人授权 ✓</p>
+          <div style="margin-top:6px">
+            <div class="check-row"><span class="ci ok">✓</span>提取音轨 → 16 kHz 单声道<span class="r">0.4s</span></div>
+            <div class="check-row"><span class="ci ok">✓</span>自动切片，找到可用片段<span class="r">42 段</span></div>
+            <div class="check-row"><span class="ci ok">✓</span>质量门禁（响度 / 底噪 / 削波）<span class="r">全部通过</span></div>
+            <div class="check-row"><span class="ci ok">✓</span>选出最清晰参考片段<span class="r">18.0s</span></div>
+            <div class="check-row"><span class="ci ok">✓</span>自动转写，生成参考文本<span class="r">置信度 0.94</span></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>质检结果 <span class="tag ok">良好，可用</span></h3>
+          <div style="margin-top:4px">
+            <div class="qc-row">响度适中，无需归一化<span class="v">-14.8 LUFS</span></div>
+            <div class="qc-row">底噪干净，无持续嘶声<span class="v">-46 dB</span></div>
+            <div class="qc-row">无削波 / 过载<span class="v">峰值 -1.2 dBFS</span></div>
+            <div class="qc-row">参考片段语音连续<span class="v">18.0s</span></div>
+            <div class="qc-row" style="color:var(--warn)">3 个片段过短，已自动跳过<span class="v">7%</span></div>
+          </div>
+          <div class="audio-strip" style="margin-top:10px">
+            <button class="play"><svg class="ic sm" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13l11-6.5z"/></svg></button>
+            <span class="wave" data-wave="21"></span>
+            <span class="mono" style="font-size:10.5px;color:var(--text3)">0:18</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>参考文本 <span class="tag mut">自动转写 · 可修正错字</span></h3>
+          <p class="ph">参考文本与参考音频必须匹配，合成前会自动校验配对。</p>
+          <div class="input-line" style="margin-top:9px">
+            <input value="今天天气真不错，我们出去走走吧，顺便去买杯咖啡。">
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>命名并完成</h3>
+          <div class="input-line" style="margin-top:9px">
+            <input value="老陈" placeholder="声音名称">
+            <button class="btn-primary">完成建档</button>
+          </div>
+          <p style="font-size:11px;color:var(--text3);margin-top:8px">建档完成后即可在工作台使用；之后随时可以进工作坊训练微调。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 页 · 声音工作坊 ===== -->
+    <section class="page" id="p-workshop">
+      <div class="flow" style="max-width:700px">
+        <button class="backlink" onclick="go('voices')"><svg class="ic sm" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>返回声音库</button>
+        <div class="page-h" style="margin-bottom:10px"><div><h1>声音工作坊 · 会议录音</h1><p class="sub">从多人素材到训练出模，一条引导流。</p></div></div>
+        <div class="flow-steps">
+          <span class="s done"><span class="n">✓</span>上传素材</span><span class="ln"></span>
+          <span class="s done"><span class="n">✓</span>选择说话人</span><span class="ln"></span>
+          <span class="s done"><span class="n">✓</span>校对</span><span class="ln"></span>
+          <span class="s cur"><span class="n">4</span>训练</span><span class="ln"></span>
+          <span class="s"><span class="n">5</span>完成</span>
+        </div>
+
+        <div class="panel">
+          <h3>训练 · 说话人 A → 新声音 <span class="tag mut">进行中</span></h3>
+          <p class="ph">数据集：42 段 · 8 分 12 秒 · 训练/验证 90/10 · 权利声明 ✓</p>
+          <div class="stat-row">
+            <div><b>42</b><span>切片</span></div>
+            <div><b>8:12</b><span>总时长</span></div>
+            <div><b>0.183</b><span>当前 loss</span></div>
+            <div><b>46%</b><span>s2 进度</span></div>
+          </div>
+          <div style="margin-top:12px">
+            <svg class="loss" viewBox="0 0 560 64" preserveAspectRatio="none">
+              <path d="M0,54 L40,50 L80,44 L120,40 L160,37 L200,33 L240,31 L280,28 L320,26 L360,24 L400,23 L440,21 L480,20 L520,19 L560,18.5" fill="none" stroke="var(--text2)" stroke-width="1.5"/>
+              <path d="M0,56 L40,52 L80,48 L120,44 L160,41 L200,39 L240,37 L280,36 L320,35 L360,34 L400,34 L440,33.5 L480,33 L520,33 L560,33" fill="none" stroke="var(--border2)" stroke-width="1.5" stroke-dasharray="3 3"/>
+              <text x="4" y="12" font-size="9" fill="var(--text3)" font-family="var(--mono)">loss 0.183 · 验证 0.217</text>
+            </svg>
+          </div>
+          <div style="display:flex;align-items:center;gap:9px;margin-top:10px">
+            <span class="gen-progress" style="height:4px"><span style="width:46%"></span></span>
+            <span class="mono" style="font-size:10.5px;color:var(--text3)">s2 音色 46% · ETA 18 分钟</span>
+          </div>
+          <div class="mono" style="font-size:10.5px;line-height:1.9;color:var(--text2);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 11px;margin-top:10px">
+            <div><span style="color:var(--text3)">14:31:08</span> epoch 7/12 · loss 0.183 · lr 2.0e-5</div>
+            <div><span style="color:var(--text3)">14:29:40</span> 保存 checkpoint step_3200</div>
+            <div><span style="color:var(--text3)">14:22:11</span> s1 韵律完成 · 用时 12 分钟</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn-secondary">查看全部指标</button>
+            <button class="btn-secondary" style="color:var(--err);border-color:var(--err-bd)">停止训练</button>
+            <span style="align-self:center;font-size:11px;color:var(--text3)">可关闭页面，任务中心持续跟进</span>
+          </div>
+        </div>
+
+        <div class="panel" style="opacity:.75">
+          <h3>完成后自动发生</h3>
+          <p class="ph">训练结束 → 扫描产物 → 填入模型配置 → 声音库出现新卡片「说话人 A」，直接可用。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 页 · 记录 ===== -->
+    <section class="page" id="p-history">
+      <div class="page-wrap" style="max-width:860px">
+        <div class="page-h">
+          <div><h1>记录</h1><p class="sub">工作台每次生成的历史，随时回听、下载。</p></div>
+          <button class="btn-secondary">清空记录</button>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden">
+          <table>
+            <thead><tr><th>时间</th><th>内容</th><th>声音</th><th>规模</th><th>状态</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="mono" style="color:var(--text3)">14:32</td><td><span class="txt2">今天天气真不错…／Good morning，各位观众…</span></td><td>晓华</td><td class="mono" style="color:var(--text3)">3 句 · 12s</td><td><span class="tag ok">完成</span></td><td style="text-align:right;white-space:nowrap"><button class="btn-ghost"><svg class="ic sm" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" style="fill:currentColor;stroke:none"/></svg></button><button class="btn-ghost"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button></td></tr>
+              <tr><td class="mono" style="color:var(--text3)">13:05</td><td><span class="txt2">这一段的情绪我们再收一点，别太用力。</span></td><td>晓华</td><td class="mono" style="color:var(--text3)">1 句 · —</td><td><span class="tag err">失败 · OOM</span></td><td style="text-align:right;white-space:nowrap"><button class="btn-ghost">重试</button></td></tr>
+              <tr><td class="mono" style="color:var(--text3)">11:08</td><td><span class="txt2">这套方案成本更低，落地也更快。</span></td><td>老陈</td><td class="mono" style="color:var(--text3)">1 句 · 4s</td><td><span class="tag ok">完成</span></td><td style="text-align:right;white-space:nowrap"><button class="btn-ghost"><svg class="ic sm" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" style="fill:currentColor;stroke:none"/></svg></button><button class="btn-ghost"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button></td></tr>
+              <tr><td class="mono" style="color:var(--text3)">10:40</td><td><span class="txt2">欢迎回到频道，今天我们聊一个新话题…</span></td><td>小雨</td><td class="mono" style="color:var(--text3)">2 句 · 9s</td><td><span class="tag ok">完成</span></td><td style="text-align:right;white-space:nowrap"><button class="btn-ghost"><svg class="ic sm" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" style="fill:currentColor;stroke:none"/></svg></button><button class="btn-ghost"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></button></td></tr>
+              <tr class="off"><td class="mono" style="color:var(--text3)">昨天 20:15</td><td><span class="txt2">早间问候测试（共 2 句）</span></td><td>晓华</td><td class="mono" style="color:var(--text3)">2 句 · 6s</td><td><span class="tag mut">文件已清理</span></td><td></td></tr>
+            </tbody>
+          </table>
+          <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-top:1px solid var(--border);font-size:11.5px;color:var(--text3)">
+            <span>共 187 条</span><span style="flex:1"></span>
+            <button class="mini" style="height:24px">上一页</button><span class="mono">1 / 38</span><button class="mini" style="height:24px">下一页</button>
+          </div>
+        </div>
+      </div>
+    </section>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 设置弹窗 ===== -->
+<div class="overlay" id="settingsModal">
+  <div class="modal">
+    <div class="mh"><h2>设置</h2><p>改动即自动保存。声音与素材相关操作都在对应页面内。</p></div>
+    <div class="mb" style="gap:0">
+      <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px"><span style="width:110px;color:var(--text2);flex:none">引擎路径</span><span style="flex:1;min-width:0"><span class="mono" style="font-size:11px;color:var(--text2);background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:2px 8px">D:\AI\GPT-SoVITS</span> <span class="tag ok">已检测</span></span><button class="mini" style="height:24px">更换</button></div>
+      <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px"><span style="width:110px;color:var(--text2);flex:none">模型</span><span style="flex:1;min-width:0"><span class="mono" style="font-size:11px;color:var(--text2);background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:2px 8px">s1v3.ckpt + v2Pro</span></span><button class="mini" style="height:24px">扫描训练产物</button></div>
+      <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px"><span style="width:110px;color:var(--text2);flex:none">环境</span><span style="flex:1;color:var(--text2)">CUDA 12 · ffmpeg 6.1 · 依赖完整</span><button class="mini" style="height:24px">重新检测</button></div>
+      <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px"><span style="width:110px;color:var(--text2);flex:none">主题</span><span style="flex:1;color:var(--text2)">浅色 / 深色</span><button class="toggle on" id="themeToggle"></button></div>
+      <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px"><span style="width:110px;color:var(--text2);flex:none">减少动效</span><span style="flex:1;color:var(--text2)">关闭波形与过渡动画</span><button class="toggle"></button></div>
+      <div style="display:flex;align-items:center;gap:12px;padding:9px 0;font-size:12.5px"><span style="width:110px;color:var(--text2);flex:none">释放显存</span><span style="flex:1;color:var(--text2)">卸载音色转换编码器</span><button class="mini" style="height:24px">释放</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ⌘K 命令面板 ===== -->
+<div class="overlay" id="cmdkModal" style="padding-top:14vh">
+  <div class="cmdk">
+    <div class="in">
+      <svg class="ic sm" viewBox="0 0 24 24" style="color:var(--text3)"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input placeholder="搜索操作、声音，或直接跳转…">
+      <kbd>ESC</kbd>
+    </div>
+    <div class="list">
+      <div class="sec">操作</div>
+      <button class="it sel"><svg class="ic sm" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" style="fill:currentColor;stroke:none"/></svg>生成全部台词<span class="d"><kbd>↵</kbd></span></button>
+      <button class="it"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>导入 TXT 台词文件</button>
+      <button class="it"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新建声音<span class="d">向导</span></button>
+      <button class="it"><svg class="ic sm" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17.5" cy="9.5" r="2.5"/><path d="M15.5 14.5a5 5 0 0 1 6 4.9"/></svg>打开声音工作坊</button>
+      <div class="sec">声音</div>
+      <button class="it"><span class="v-avatar" style="width:22px;height:22px;font-size:10px">晓</span>晓华 · 克隆音色<span class="d">清晰度 95</span></button>
+      <button class="it"><span class="v-avatar" style="width:22px;height:22px;font-size:10px">陈</span>老陈 · 建档中<span class="d">72%</span></button>
+      <button class="it"><span class="v-avatar dk" style="width:22px;height:22px;font-size:10px">底</span>官方底模 · 通用女声</button>
+      <div class="sec">跳转</div>
+      <button class="it"><svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>打开记录</button>
+    </div>
+    <div class="ft"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 执行</span><span><kbd>ESC</kbd> 关闭</span></div>
+  </div>
+</div>
+
+<script>
+  const CRUMB={workbench:'工作台',voices:'声音库',wizard:'声音库 · 新建声音',workshop:'声音库 · 声音工作坊',history:'记录'};
+  const navs=document.querySelectorAll('[data-page]');
+  function go(p){
+    document.querySelectorAll('.page').forEach(s=>s.classList.toggle('active',s.id==='p-'+p));
+    navs.forEach(n=>n.classList.toggle('active',n.dataset.page===p));
+    document.getElementById('crumb').textContent=CRUMB[p]||'工作台';
+    document.getElementById('createModal').classList.remove('open');
+    window.scrollTo(0,0);
+  }
+  navs.forEach(n=>n.addEventListener('click',()=>go(n.dataset.page)));
+  if(location.hash)go(location.hash.slice(1));
+
+  // 波形（确定性伪随机，像素高度）
+  document.querySelectorAll('[data-wave]').forEach(el=>{
+    let seed=0;for(const c of el.dataset.wave)seed=(seed*31+c.charCodeAt(0))>>>0;
+    const rnd=()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296};
+    const played=parseFloat(el.dataset.played||'0');
+    const H=el.clientHeight||24;
+    const N=Math.max(12,Math.min(56,Math.floor(el.getBoundingClientRect().width/4.2)||26));
+    for(let i=0;i<N;i++){
+      const b=document.createElement('i');
+      const h=.22+.78*Math.abs(Math.sin(i*.7+seed%9))*(.55+.45*rnd());
+      b.style.height=Math.max(2,Math.round(h*H*.92))+'px';
+      if(played>0&&i/N*100<=played)b.className='on';
+      el.appendChild(b);
+    }
+  });
+
+  // 弹窗通用
+  function bindModal(id,openIds){
+    const m=document.getElementById(id);
+    openIds.forEach(o=>document.getElementById(o).addEventListener('click',e=>{e.stopPropagation();m.classList.add('open')}));
+    m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')});
+    return m;
+  }
+  const cm=bindModal('createModal',['createVoiceBtn']);
+  const sm=bindModal('settingsModal',['settingsBtn','sideSettings']);
+  const km=bindModal('cmdkModal',['cmdkBtn']);
+  document.getElementById('createClose').addEventListener('click',()=>cm.classList.remove('open'));
+  const pop=document.getElementById('taskPop');
+  document.getElementById('taskBtn').addEventListener('click',e=>{e.stopPropagation();pop.classList.toggle('open')});
+  document.addEventListener('click',e=>{if(!pop.contains(e.target))pop.classList.remove('open')});
+  document.addEventListener('keydown',e=>{
+    if(e.key==='Escape'){sm.classList.remove('open');cm.classList.remove('open');km.classList.remove('open');pop.classList.remove('open')}
+    if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();km.classList.toggle('open')}
+  });
+
+  // 主题
+  const html=document.documentElement;
+  const sun='<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+  const moon='<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>';
+  function applyTheme(t){
+    html.setAttribute('data-theme',t);
+    document.getElementById('themeIcon').innerHTML=t==='dark'?moon:sun;
+    document.getElementById('themeToggle').classList.toggle('on',t==='dark');
+  }
+  const saved=(new URLSearchParams(location.search).get('theme'))||localStorage.getItem('xianghua.design-c.theme')||'light';
+  applyTheme(saved);
+  function toggleTheme(){
+    const next=html.getAttribute('data-theme')==='dark'?'light':'dark';
+    localStorage.setItem('xianghua.design-c.theme',next);
+    applyTheme(next);
+  }
+  document.getElementById('themeBtn').addEventListener('click',toggleTheme);
+  document.getElementById('themeToggle').addEventListener('click',toggleTheme);
+
+  // 演示交互
+  document.querySelectorAll('.radio-row').forEach(r=>r.addEventListener('click',()=>{
+    r.parentElement.querySelectorAll('.radio-row').forEach(x=>x.classList.remove('on'));r.classList.add('on');
+  }));
+  document.querySelectorAll('.seg').forEach(sg=>sg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    sg.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  })));
+  document.querySelectorAll('.filter-chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('.filter-chip').forEach(x=>x.classList.remove('on'));c.classList.add('on');
+  }));
+  document.querySelectorAll('.spk-card').forEach(c=>c.addEventListener('click',()=>{
+    c.parentElement.querySelectorAll('.spk-card').forEach(x=>x.classList.remove('on'));c.classList.add('on');
+  }));
+  document.querySelectorAll('.cmdk .it').forEach(it=>it.addEventListener('click',()=>km.classList.remove('open')));
+  document.getElementById('advDisc').querySelector('.hd').addEventListener('click',()=>document.getElementById('advDisc').classList.toggle('open'));
+</script>
+</body>
+</html>

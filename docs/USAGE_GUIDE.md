@@ -2,7 +2,7 @@
 
 README 的扩展版：一键安装、命令行批量合成与 FAQ。
 
-> **2026-10-17 状态**：当前默认是“清晰优先”（底模 v2Pro + 清晰参考音），自动广普替换已关闭。旧的全自动“轻中广普”文字替换正在被转成档位化 accent pack；不要把它当作最终口音方案。新架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+> **2026-10-17 状态**：当前默认是“清晰优先”（底模 v2Pro + 清晰参考音），默认 `accent_level=off`。音色入口已改为**一段自然说话音频**：系统自动切片、识别、选参考片段，不需要照读台词本或补录口音。口音为 `off / light / medium / heavy` 四档，固定搭配受保护。首轮验证见 [MVP_VALIDATION.md](MVP_VALIDATION.md)，新架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 本仓库**不携带 GPT-SoVITS 环境**（它是独立的 MIT 项目，本体 + 模型约 15GB）。
 `setup.ps1` / `setup.sh` 会自动完成 6 步：
@@ -41,7 +41,7 @@ cp ../XiangHua/scripts/sitecustomize.py GPT_SoVITS/         # Windows 音频修�
 python ../XiangHua/tools/local_tts.py 台词.txt 输出目录
 ```
 
-**台词文件**：UTF-8 编码，一行一句（建议 5~20 字），`#` 开头为注释。写普通话即可；当前默认不做自动广普替换，后续由独立的 accent pack 控制口音强度。
+**台词文件**：UTF-8 编码，一行一句（建议 5~20 字），`#` 开头为注释。写普通话即可；默认不做口音替换，需要时用 `ACCENT_LEVEL` 或 WebUI 的“口音档位”控制。
 
 **环境变量**（默认在项目根目录内自动发现可用环境）：
 
@@ -49,11 +49,12 @@ python ../XiangHua/tools/local_tts.py 台词.txt 输出目录
 |---|---|---|
 | `GPT_SOVITS_ROOT` | GPT-SoVITS 根目录 | 扫描项目根目录一级子目录 |
 | `GPT_MODEL` / `SOVITS_MODEL` | 模型路径 | 当前配置（默认清晰优先底模） |
-| `REF_AUDIO` / `REF_TEXT` | 参考音频与对应文本 | `custom_data/sliced/训练.wav...` |
+| `REF_AUDIO` / `REF_TEXT` | 参考音频与文本；WebUI 上传会自动生成，CLI 可手动覆盖 | `custom_data/sliced/训练.wav...` |
 | `TOP_K` / `TOP_P` / `TEMPERATURE` | 采样参数 | 30 / 0.88 / 0.95 |
 | `SAMPLE_STEPS` | 扩散步数（卡顿就调高） | 64 |
 | `SPEED` / `PAUSE_SECOND` | 语速 / 句间停顿 | 1.0 / 0.15 |
-| `AUTO_LIGHTMID` | 设为 `1` 才启用自动转广普；默认关闭 | `0` |
+| `ACCENT_LEVEL` | 口音档位：`off / light / medium / heavy` | `off` |
+| `AUTO_LIGHTMID` | 旧兼容开关；设为 `1` 时映射为 `medium` | `0` |
 
 ```bash
 # 用环境变量覆盖模型路径的示例
@@ -61,10 +62,32 @@ GPT_MODEL=/path/to/model.ckpt SOVITS_MODEL=/path/to/model.pth \
 python tools/local_tts.py 台词.txt out/
 ```
 
+## 20 句回归与客观验收
+
+固定样本在 `backend/tests/fixtures/tts_regression_20.json`，覆盖清晰普通话、技术句、轻/中/浓广普。完整运行会输出音频、CER、SECS、时长、削波和异常静音：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\tts_regression.py
+```
+
+复用已生成音频，只重算指标：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\tts_regression.py --skip-synthesis
+```
+
+报告在 `output/tts_regression/report.json`。CER 是可懂度护栏，SECS 是音色相似度；两者必须一起看，不能只看 SECS。
+
+同文本、只改口音档位的交换测试：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\accent_swap_verify.py
+```
+
 ## WebUI
 
 浏览器图形界面，六个页面：**合成 / 批量合成 / 环境检测 / 训练 / 历史记录 / 设置**。
-「训练」页支持从录音到专属音色的全流程（切片、识别、表格校对、特征提取、s1+s2 训练），全部在浏览器完成、无需命令行；
+「训练」页支持从一段自然说话音频到专属音色的全流程（自动切片、ASR、可选校对、特征提取、s1+s2 训练），全部在浏览器完成、无需命令行；不需要照读台词本；
 训练结束后「扫描训练产物 → 填入设置」即可回「合成」页用新音色。环境检测页会直接告诉你缺什么依赖并给出修复命令。
 
 页面详解、配置优先级、WebUI 专属 FAQ 见 [WEBUI_GUIDE.md](WEBUI_GUIDE.md)。
@@ -74,7 +97,7 @@ python tools/local_tts.py 台词.txt out/
 ## 常见问题
 
 **Q：合成声音有噪点 / 卡顿？**
-小数据训练常见。先试 `SAMPLE_STEPS=64`、换更干净的参考音频；根治靠加录音量（10 分钟以上）重训。
+小数据训练常见。先试 `SAMPLE_STEPS=64`、换更干净的参考片段；根治靠更多干净、已授权的自然说话录音，而不是让用户照稿补录。
 
 **Q：粤字还是按普通话念？**
 补丁没生效：确认 `git apply` 成功，且**训练前**重新执行了 1-get-text.py（补丁只影响训练阶段的音素标注）。
@@ -100,7 +123,7 @@ XiangHua/
 ├── tools/               # local_tts / webui / train
 ├── scripts/             # 训练链、数据准备、验收
 ├── GPT-SoVITS/          # GPT-SoVITS v2Pro 引擎与模型
-├── assets/              # 口音包清单、录音台词本、Logo
+├── assets/              # 口音包清单、Logo（旧台词本仅作可选示例）
 ├── docs/                # 架构、产品、训练与使用文档
 ├── examples/            # 示例台词
 └── patches/             # 发音补丁

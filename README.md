@@ -11,8 +11,10 @@
 
 - 已删除过期研究文档、旧实验/输出、缓存、DiaMoE 死路和旧中间 checkpoint；
 - 保留用户原始录音、切片、ASR、最终权重、当前模型和运行环境；
-- 默认合成已切到“清晰优先”：底模 v2Pro + 清晰参考音，关闭自动广普替换；
-- 新架构与产品路线见：
+- 默认合成已切到“清晰优先”：底模 v2Pro + 清晰参考音，默认 `accent_level=off`；
+- 首轮 MVP 已跑通：20 句固定回归、档位化发音层、参考音/文本配对；
+- 音色入口改为**一段自然说话音频**：系统自动切片、识别、选参考片段，用户不需要照读台词本或补录口音；
+- 验证结果见 [MVP 验证记录](docs/MVP_VALIDATION.md)，新架构与产品路线见：
   - [架构：音色/发音/韵律/口音四分离](docs/ARCHITECTURE.md)
   - [B2B 角色声线 API 与授权策略](docs/B2B_VOICE_API_STRATEGY.md)
   - [项目持久记忆](docs/PROJECT_MEMORY.md)
@@ -28,9 +30,9 @@
 
 后续工作优先级：
 
-1. 建固定回归集，先保证可懂度；
-2. 把口音规则档位化，保护固定搭配；
-3. 把发音字典从训练特征里外置；
+1. 固定回归集、档位化口音规则、参考音/文本配对：**已跑通首轮 MVP**；
+2. 用一段已有的自然说话录音（建议 5–10 分钟）跑自动建档；不要求用户照稿补录；
+3. 把发音字典从训练特征里彻底外置；
 4. 再训练音色 adapter；
 5. 最后做 Managed Training、B2B API 和授权账本。
 
@@ -64,8 +66,9 @@
 GPT_MODEL
 SOVITS_MODEL
 REF_AUDIO
-REF_TEXT
-AUTO_LIGHTMID
+REF_TEXT            # 可选；WebUI 上传会自动识别
+ACCENT_LEVEL=off|light|medium|heavy
+AUTO_LIGHTMID=1   # 旧接口，映射为 medium
 ```
 
 ### 3. 当前默认模型
@@ -87,9 +90,9 @@ SoVITS: GPT-SoVITS/GPT_SoVITS/pretrained_models/v2Pro/s2Gv2Pro.pth
 |---|---|---|
 | 合成 | 本地单用户 FastAPI + WebUI | 多租户 B2B API |
 | 训练 | 本地 CLI/WebUI 训练链 | Managed / API / On-prem 三层 |
-| 发音 | 文本替换 + G2P 补丁 | 外置 PronunciationPlan + 版本化字典 |
-| 音色 | 参考音/全量微调 | speaker encoder + adapter |
-| 口音 | 全局替换 | AccentPack + 强度档位 |
+| 发音 | PronunciationPlan + 基础字典 | 版本化字典 + 训练特征外置 |
+| 音色 | 一段自然音频自动建档 | speaker encoder + adapter |
+| 口音 | off/light/medium/heavy + 固定搭配保护 | AccentPack + 强度档位 |
 | 授权 | 文档与配置 | License Ledger + 证书 + 验证 |
 | 导出 | 音频/历史 | WAV/MP3 + SRT + manifest |
 
@@ -97,12 +100,33 @@ SoVITS: GPT-SoVITS/GPT_SoVITS/pretrained_models/v2Pro/s2Gv2Pro.pth
 
 ## 文档
 
+- [交接文档](docs/HANDOFF.md)
+- [核心架构自检](docs/CORE_ARCHITECTURE_AUDIT.md)
+- [/v1 API 契约](docs/API_V1.md)
+- [MVP 验证记录](docs/MVP_VALIDATION.md)
 - [架构：四分离](docs/ARCHITECTURE.md)
 - [B2B API 与授权策略](docs/B2B_VOICE_API_STRATEGY.md)
 - [项目记忆](docs/PROJECT_MEMORY.md)
 - [训练指南](docs/TRAINING_GUIDE.md)
 - [使用手册](docs/USAGE_GUIDE.md)
 - [WebUI 指南](docs/WEBUI_GUIDE.md)
+
+---
+
+## API
+
+- WebUI 用内部前缀 `/api/*`，随界面演进，不承诺稳定；
+- 对外契约是 `/v1/*`，与 `/api` 同一套 handler 双挂载，只增不改；
+- 交互式文档：`GET /docs`，机器可读：`GET /openapi.json`；
+- 错误响应形如 `{"detail": "中文说明", "code": "NOT_FOUND"}`；
+- 完整说明见 [/v1 API 契约](docs/API_V1.md)。
+
+快速验证：
+
+```powershell
+curl.exe http://127.0.0.1:7860/v1/health
+curl.exe http://127.0.0.1:7860/v1/jobs
+```
 
 ---
 
@@ -114,7 +138,7 @@ frontend/           Vue 3 WebUI
 tools/              本地合成、WebUI、训练封装
 scripts/            训练链、数据集准备、验收脚本
 GPT-SoVITS/         GPT-SoVITS v2Pro 引擎与模型
-assets/             口音包清单、录音台词本、Logo
+assets/             口音包清单、Logo（旧台词本仅作可选示例）
 docs/               架构、产品、训练与使用文档
 examples/           示例台词
 patches/            发音补丁
@@ -134,6 +158,12 @@ third_party/knn-vc/ 当前音色转换链路
 
 ## License
 
-MIT © 2026 MouYuc
+本项目自有代码采用 **GNU Affero General Public License v3.0（AGPL-3.0）**，全文见 [LICENSE](LICENSE)。
 
-GPT-SoVITS 本身为 MIT 协议，请遵守其许可条款。
+- 可以自由使用、修改、分发，包括商用；
+- 如果把修改后的版本作为网络服务对外提供，必须同样以 AGPL-3.0 开放对应源代码；
+- 如需闭源集成或商业托管豁免，可另行协商授权。
+
+第三方组件的许可各自保留：GPT-SoVITS 为 MIT，kNN-VC 等按其仓库声明执行，不因本项目采用 AGPL 而改变。
+
+© 2026 MouYuc
