@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "name": "tts_regression_20",
+  "description": "固定 20 句 TTS 回归集。每组 4 句；文本按原样送入合成，不额外叠加全局口音替换。",
+  "seed": 20261017,
+  "groups": ["clear", "technical", "light", "medium", "heavy"],
+  "coverage": {
+    "protected_terms": ["目的", "的确", "于是", "可是", "但是"],
+    "out_of_training_ids": ["clear_04", "technical_01", "technical_02"],
+    "notes": [
+      "clear 组只放清晰普通话，不放浓粤语或广普句子。",
+      "technical 组用于检查书面句、技术词和受保护搭配是否仍可懂。",
+      "light/medium/heavy 的文本本身已体现对应口音浓度，避免测试脚本再执行一次不可控的全局替换。",
+      "训练外文本用于检查模型是否只会在训练语料上复读。"
+    ]
+  },
+  "cases": [
+    {
+      "id": "clear_01",
+      "group": "clear",
+      "accent_level": "off",
+      "text": "今天下午三点，我们在图书馆门口见面。",
+      "expected_prosody": "平稳陈述，逗号处短停顿，句末自然收尾。",
+      "notes": "清晰普通话基线。"
+    },
+    {
+      "id": "clear_02",
+      "group": "clear",
+      "accent_level": "off",
+      "text": "请把窗户关上，外面风有点大。",
+      "expected_prosody": "日常请求语气，第二分句略加强调“有点大”。",
+      "notes": "清晰普通话基线。"
+    },
+    {
+      "id": "clear_03",
+      "group": "clear",
+      "accent_level": "off",
+      "text": "他昨天加班到很晚，今天看起来有些疲惫。",
+      "expected_prosody": "叙述语气，前后分句保持连贯，不要拖长停顿。",
+      "notes": "清晰普通话基线。"
+    },
+    {
+      "id": "clear_04",
+      "group": "clear",
+      "accent_level": "off",
+      "text": "蓝色纸鹤停在窗台，雨后的街道很安静。",
+      "expected_prosody": "舒缓叙述，逗号处轻停顿，句末降调。",
+      "notes": "训练外文本；不含广普替换词，用于检查泛化。"
+    },
+    {
+      "id": "technical_01",
+      "group": "technical",
+      "accent_level": "off",
+      "text": "本次版本更新修复了登录失败的问题，并优化了文件上传流程。",
+      "expected_prosody": "书面说明语气，术语清晰，分句之间短停顿。",
+      "notes": "训练外文本；技术句，检查“了/的/并”等结构不被口音规则破坏。"
+    },
+    {
+      "id": "technical_02",
+      "group": "technical",
+      "accent_level": "off",
+      "text": "调用接口之前，请确认请求参数和返回结果的格式。",
+      "expected_prosody": "操作说明语气，术语“接口/参数/格式”逐字清楚。",
+      "notes": "训练外文本；技术句，含书面连词和复合名词。"
+    },
+    {
+      "id": "technical_03",
+      "group": "technical",
+      "accent_level": "off",
+      "text": "我们的目的是验证发音字典在不同音色下是否稳定。",
+      "expected_prosody": "完整陈述，避免把“目的”拆开或改写。",
+      "notes": "受保护搭配：目的；同时检查“的”不应被全局替换。"
+    },
+    {
+      "id": "technical_04",
+      "group": "technical",
+      "accent_level": "off",
+      "text": "这个判断的确成立，于是我们决定采用可回退的方案；但是暂时不上线，可是还需要补一组测试。",
+      "expected_prosody": "分号处中等停顿，“的确/于是/但是/可是”保持清晰。",
+      "notes": "受保护搭配：的确、于是、但是、可是。"
+    },
+    {
+      "id": "light_01",
+      "group": "light",
+      "accent_level": "light",
+      "text": "麻烦你帮我看一下，这个文件系唔系放错地方了？",
+      "expected_prosody": "轻松询问，疑问句尾略上扬，别把“系唔系”吞掉。",
+      "notes": "轻广普；只出现少量粤语词。"
+    },
+    {
+      "id": "light_02",
+      "group": "light",
+      "accent_level": "light",
+      "text": "今日嘅会议改到下午三点，地点仲系老地方。",
+      "expected_prosody": "日常通知语气，时间点清楚，句末平稳。",
+      "notes": "轻广普；观察“嘅/仲系”是否自然且可懂。"
+    },
+    {
+      "id": "light_03",
+      "group": "light",
+      "accent_level": "light",
+      "text": "你先试下这个设置，应该冇问题。",
+      "expected_prosody": "建议语气，前半句轻快，后半句确认式收尾。",
+      "notes": "轻广普；含“冇”。"
+    },
+    {
+      "id": "light_04",
+      "group": "light",
+      "accent_level": "light",
+      "text": "你睇下这段文字，测试目的系唔系仲差一个句号？",
+      "expected_prosody": "询问语气，“目的”保持原词，疑问句尾上扬。",
+      "notes": "轻广普；受保护搭配：目的。"
+    },
+    {
+      "id": "medium_01",
+      "group": "medium",
+      "accent_level": "medium",
+      "text": "我哋今日下午去图书馆门口等你，记得带埋身份证。",
+      "expected_prosody": "口语提醒语气，逗号后短停顿，“带埋”连贯。",
+      "notes": "中广普；人称和动词结构更口语化。"
+    },
+    {
+      "id": "medium_02",
+      "group": "medium",
+      "accent_level": "medium",
+      "text": "呢个方案嘅目的系先验证可懂度，唔系马上上线。",
+      "expected_prosody": "解释语气，两个分句对比清楚，“目的”不能改写。",
+      "notes": "中广普；受保护搭配：目的。"
+    },
+    {
+      "id": "medium_03",
+      "group": "medium",
+      "accent_level": "medium",
+      "text": "你话嘅确有道理，于是我哋先保留呢个版本，但系暂时唔对外发布。",
+      "expected_prosody": "协商语气，逻辑连接词清楚，不要连读成一句。",
+      "notes": "中广普；受保护搭配：的确、于是。"
+    },
+    {
+      "id": "medium_04",
+      "group": "medium",
+      "accent_level": "medium",
+      "text": "如果听日冇落雨，我哋就去公园行下，顺便试下新麦克风。",
+      "expected_prosody": "条件句，前件后短停顿，最后一项轻快收尾。",
+      "notes": "中广普；含条件关系和日常动作。"
+    },
+    {
+      "id": "heavy_01",
+      "group": "heavy",
+      "accent_level": "heavy",
+      "text": "佢琴日话唔得闲，我哋不如听日再去啦。",
+      "expected_prosody": "浓口语建议语气，逗号处短停顿，句末“啦”自然。",
+      "notes": "浓广普/粤语化文本；只用于口音压力测试，不作为清晰组。"
+    },
+    {
+      "id": "heavy_02",
+      "group": "heavy",
+      "accent_level": "heavy",
+      "text": "呢件事我真系唔知点算，你哋自己倾掂佢啦。",
+      "expected_prosody": "无奈语气，两个分句语气连贯，避免含糊吞音。",
+      "notes": "浓广普/粤语化文本；只用于口音压力测试。"
+    },
+    {
+      "id": "heavy_03",
+      "group": "heavy",
+      "accent_level": "heavy",
+      "text": "我哋嗰边嘅天气成日落雨，出街记得带遮啊。",
+      "expected_prosody": "提醒语气，前半句稍快，后半句重音落在“带遮”。",
+      "notes": "浓广普/粤语化文本；检查连续粤语词下的可懂度。"
+    },
+    {
+      "id": "heavy_04",
+      "group": "heavy",
+      "accent_level": "heavy",
+      "text": "你咁样讲就冇意思喇，不如大家坐低慢慢讲清楚。",
+      "expected_prosody": "劝解语气，前半句轻微强调，后半句放慢。",
+      "notes": "浓广普/粤语化文本；只用于口音压力测试。"
+    }
+  ]
+}

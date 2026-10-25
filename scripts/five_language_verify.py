@@ -124,12 +124,20 @@ class LanguageIdentifier:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = AutoModel(**settings, device=self.device)
 
-    def identify(self, wav_path: str | Path) -> dict:
+    def identify(self, wav_path: str | Path, *, use_itn: bool = True) -> dict:
+        """Transcribe one clip, optionally disabling inverse text normalisation.
+
+        CER against a hand-authored Chinese prompt should compare characters, not
+        fight ASR ITN: ``三点`` becomes ``3点`` under ITN and shows up as a speech
+        error even when the readback is perfect. Callers measuring CER can pass
+        ``use_itn=False``; language identification and UI-facing transcripts keep the
+        default readable form.
+        """
         result = self.model.generate(
             input=str(wav_path),
             cache={},
             language="auto",
-            use_itn=True,
+            use_itn=use_itn,
             batch_size_s=60,
             merge_vad=True,
             merge_length_s=15,
