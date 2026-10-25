@@ -26,6 +26,7 @@ scripts/_shim_boot/
 .cache/
 .pytest_cache/
 .webui/
+.zcode/
 
 # Nested standalone git repositories vendored under third_party (each has its own .git);
 # the parent repo has never tracked their contents, so keep them out of status.
