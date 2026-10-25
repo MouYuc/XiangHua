@@ -7,7 +7,7 @@ import {
   formatHertz,
   formatPercent,
   formatSeconds,
-  isReferenceBlocking,
+  referenceQualityFailed,
   passingChecks,
   referenceMetricRows,
   referenceStatusLabel,
@@ -41,11 +41,11 @@ describe('reference audio verdicts', () => {
   it('only a fail blocks the user', () => {
     // A warning must never stop synthesis: a strict gate that blocks usable clips is
     // worse than no gate, because the user cannot override a disabled button.
-    expect(isReferenceBlocking(report({ status: 'ok' }))).toBe(false)
-    expect(isReferenceBlocking(report({ status: 'warn' }))).toBe(false)
-    expect(isReferenceBlocking(report({ status: 'unknown' }))).toBe(false)
-    expect(isReferenceBlocking(report({ status: 'fail' }))).toBe(true)
-    expect(isReferenceBlocking(null)).toBe(false)
+    expect(referenceQualityFailed(report({ status: 'ok' }))).toBe(false)
+    expect(referenceQualityFailed(report({ status: 'warn' }))).toBe(false)
+    expect(referenceQualityFailed(report({ status: 'unknown' }))).toBe(false)
+    expect(referenceQualityFailed(report({ status: 'fail' }))).toBe(true)
+    expect(referenceQualityFailed(null)).toBe(false)
   })
 
   it('labels every status the backend can emit', () => {

@@ -164,3 +164,62 @@ function handleKeyup(event: KeyboardEvent) {
     </ul>
   </div>
 </template>
+
+<style scoped>
+.language-marker-field {
+  position: relative;
+}
+
+.language-marker-menu {
+  position: absolute;
+  top: calc(100% - 4px);
+  left: 0;
+  z-index: 30;
+  width: 200px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.language-marker-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  text-align: left;
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+}
+
+.language-marker-menu button:hover,
+.language-marker-menu button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.language-marker-menu b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+
+.language-marker-menu code {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+</style>

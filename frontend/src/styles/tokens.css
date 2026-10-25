@@ -1,0 +1,56 @@
+/* 设计系统令牌 —— 来自 design/C-studio.html 定稿（shadcn 式近单色） */
+:root{
+  --bg:#FAFAFA; --surface:#FFFFFF; --surface2:#F4F4F5; --surface3:#EFEFF1;
+  --border:#E4E4E7; --border2:#D4D4D8;
+  --text:#18181B; --text2:#71717A; --text3:#A1A1AA;
+  --primary:#18181B; --primary-hover:#3F3F46; --on-primary:#FAFAFA;
+  --ok:#15803D; --ok-bg:#F0FDF4; --ok-bd:#DCFCE7;
+  --warn:#B45309; --warn-bg:#FFFBEB; --warn-bd:#FEF3C7;
+  --err:#B91C1C; --err-bg:#FEF2F2; --err-bd:#FECACA;
+  --r:8px; --rs:6px;
+  --pop-shadow:0 10px 38px -10px rgba(0,0,0,.22), 0 0 0 1px var(--border);
+  --font:"Inter","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,monospace;
+}
+html[data-theme="dark"]{
+  --bg:#09090B; --surface:#101012; --surface2:#1C1C1F; --surface3:#242428;
+  --border:#26262A; --border2:#3F3F46;
+  --text:#FAFAFA; --text2:#A1A1AA; --text3:#71717A;
+  --primary:#FAFAFA; --primary-hover:#D4D4D8; --on-primary:#18181B;
+  --ok:#4ADE80; --ok-bg:#0C1F14; --ok-bd:#14532D;
+  --warn:#FBBF24; --warn-bg:#211A05; --warn-bd:#713F12;
+  --err:#F87171; --err-bg:#250B0B; --err-bd:#7F1D1D;
+  --pop-shadow:0 10px 38px -10px rgba(0,0,0,.7), 0 0 0 1px var(--border);
+}
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after{
+  animation-duration:.01ms !important;
+  animation-iteration-count:1 !important;
+  transition-duration:.01ms !important;
+}
+
+/* 旧组件（AudioPlayer / ReferenceAudioReport）的令牌别名桥接 */
+:root{
+  --accent:var(--text);
+  --accent-line:var(--border2);
+  --accent-soft:var(--surface2);
+  --rule:var(--border);
+  --rule-strong:var(--border2);
+  --panel:var(--surface);
+  --panel-2:var(--surface2);
+  --ink:var(--text);
+  --ink-2:var(--text2);
+  --ink-3:var(--text3);
+  --font-mono:var(--mono);
+  --radius:var(--rs);
+  --radius-lg:var(--r);
+  --danger:var(--err);
+  --danger-line:var(--err-bd);
+  --danger-soft:var(--err-bg);
+  --warn-line:var(--warn-bd);
+  --warn-soft:var(--warn-bg);
+  --shadow:var(--pop-shadow);
+  --text-sm:12px;
+  --text-xs:11px;
+}

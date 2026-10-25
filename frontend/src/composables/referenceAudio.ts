@@ -79,7 +79,7 @@ export type ReferenceInspectKind = 'file' | 'corpus'
 export const REFERENCE_STATUS_LABELS: Record<string, string> = {
   ok: '可用',
   warn: '可用但有警告',
-  fail: '不可用',
+  fail: '未达标',
   unknown: '无法检查',
 }
 
@@ -93,8 +93,8 @@ export function referenceStatusLabel(status: unknown): string {
   return REFERENCE_STATUS_LABELS[String(status ?? '')] || '未知'
 }
 
-/** 只有 fail 才必须拦住用户；warn 和 unknown 都要放行，否则门禁会误伤。 */
-export function isReferenceBlocking(report: ReferenceReport | null | undefined): boolean {
+/** 门禁只提示、不拦截：fail 也照常填入配置，用户始终可以直接试合成。 */
+export function referenceQualityFailed(report: ReferenceReport | null | undefined): boolean {
   return report?.status === 'fail'
 }
 
