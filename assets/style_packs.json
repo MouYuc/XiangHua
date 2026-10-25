@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "packs": [
+    {
+      "style_id": "natural",
+      "display_name": "自然",
+      "description": "默认语速与停顿，适合大多数台词。",
+      "pace": 1.0,
+      "pitch_range": "medium",
+      "energy": "medium",
+      "pause_scale": 1.0,
+      "emotion": "neutral",
+      "synthesis": { "speed": 1.0, "pause_second": 0.15 }
+    },
+    {
+      "style_id": "calm",
+      "display_name": "沉稳",
+      "description": "略慢、停顿更长，适合旁白与叙述。",
+      "pace": 0.95,
+      "pitch_range": "narrow",
+      "energy": "low",
+      "pause_scale": 1.4,
+      "emotion": "neutral",
+      "synthesis": { "speed": 0.95, "pause_second": 0.3 }
+    },
+    {
+      "style_id": "energetic",
+      "display_name": "明快",
+      "description": "略快、停顿更短，适合战斗与吐槽。",
+      "pace": 1.1,
+      "pitch_range": "wide",
+      "energy": "high",
+      "pause_scale": 0.6,
+      "emotion": "positive",
+      "synthesis": { "speed": 1.1, "pause_second": 0.08 }
+    },
+    {
+      "style_id": "narrative",
+      "display_name": "叙述",
+      "description": "正常语速、句间停顿略长，适合有声书与故事。",
+      "pace": 1.0,
+      "pitch_range": "medium",
+      "energy": "medium",
+      "pause_scale": 1.2,
+      "emotion": "neutral",
+      "synthesis": { "speed": 1.0, "pause_second": 0.25 }
+    }
+  ]
+}

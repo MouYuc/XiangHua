@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 SynthesisLanguage = Literal["zh", "yue", "en", "ja", "ko"]
+AccentLevel = Literal["off", "light", "medium", "heavy"]
 
 
 class ConfigUpdate(BaseModel):
@@ -25,6 +26,8 @@ class ConfigUpdate(BaseModel):
     pause_second: float | None = Field(default=None, ge=0, le=10)
     voice_profile_id: str | None = None
     accent_id: str | None = None
+    accent_level: AccentLevel | None = None
+    take_selection: bool | None = None
     mixed_eos_floor: int | None = Field(default=None, ge=0)
     mixed_token_cap: int | None = Field(default=None, ge=0)
     auto_lightmid: bool | None = None
@@ -44,8 +47,30 @@ class ConfigUpdate(BaseModel):
         return str(value).upper() if value is not None else None
 
 
+class VoiceCardCreate(BaseModel):
+    display_name: str = Field(min_length=1)
+    language: SynthesisLanguage = "zh"
+    license_id: str | None = None
+    consent_id: str | None = None
+    notes: str | None = None
+
+
+class VoiceCardUpdate(BaseModel):
+    display_name: str | None = None
+    status: Literal["active", "retired"] | None = None
+    license_id: str | None = None
+    consent_id: str | None = None
+    active_version: str | None = None
+
+
+class VoiceCardVersionCreate(BaseModel):
+    notes: str | None = None
+
+
 class SynthesisRequest(ConfigUpdate):
     text: str
+    voice_card_id: str | None = None
+    style_id: str | None = None
 
 
 class EnvironmentSelectRequest(BaseModel):
@@ -105,7 +130,34 @@ class ReferenceAudioRequest(BaseModel):
     path: str | None = None
     directory: str | None = None
     purpose: str = "synthesis"
+    ref_text: str | None = None
 
 
 class DoctorRequest(BaseModel):
     repair: bool = False
+
+class MediaAnalyzeRequest(BaseModel):
+    """Start speaker diarization for an uploaded media session."""
+
+    speaker_count: int | None = Field(default=None, ge=1, le=12)
+    transcribe: bool = False
+    model: str = "large-v3"
+
+
+class MediaSelectSpeakerRequest(BaseModel):
+    speaker_id: str
+
+
+class MediaExportRequest(BaseModel):
+    """Target one speaker's slices, optionally pinned to a past run or dataset.
+
+    ``dataset_id`` re-activates an already exported dataset (its manifest is the
+    snapshot), while ``run_id`` selects one analysis run of the session. Without
+    either, the session's active run is used.
+    """
+
+    speaker_id: str | None = None
+    include_failed: bool = False
+    require_text: bool = True
+    dataset_id: str | None = None
+    run_id: str | None = None

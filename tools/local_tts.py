@@ -27,7 +27,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.services.core import SynthesisBackend
 from tools.env import resolve_default_environment_root
-from tools.rules import safe_name, to_lightmid
+from tools.rules import safe_name
+from backend.services.pronunciation import build_pronunciation_plan
 
 GPT_SOVITS_ROOT = os.path.abspath(resolve_default_environment_root(Path(__file__).resolve().parents[1]))
 
@@ -49,8 +50,10 @@ SAMPLE_STEPS = int(os.environ.get("SAMPLE_STEPS", "64"))
 SPEED = float(os.environ.get("SPEED", "1.0"))
 PAUSE_SECOND = float(os.environ.get("PAUSE_SECOND", "0.15"))
 
-# 轻中浓度自动转换（默认关闭；设为 1 才启用）
-AUTO_LIGHTMID = os.environ.get("AUTO_LIGHTMID", "0") == "1"
+# 口音档位：off / light / medium / heavy。旧 AUTO_LIGHTMID=1 映射为 medium。
+ACCENT_LEVEL = os.environ.get("ACCENT_LEVEL", "off")
+if os.environ.get("AUTO_LIGHTMID", "0") == "1" and "ACCENT_LEVEL" not in os.environ:
+    ACCENT_LEVEL = "medium"
 # =============================================================
 
 
@@ -99,7 +102,7 @@ def main():
     print(f"共 {len(lines)} 句，开始合成（每句约 10~30 秒）...")
     ok = 0
     for i, line in enumerate(lines, 1):
-        text = to_lightmid(line) if AUTO_LIGHTMID else line
+        text = build_pronunciation_plan(line, language="zh", accent_level=ACCENT_LEVEL).rendered_text
         out_wav = os.path.join(outdir, f"{i:03d}_{safe_name(line)}.wav")
         out_mp3 = out_wav[:-4] + ".mp3"
         try:

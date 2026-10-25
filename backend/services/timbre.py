@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from backend.services import core
+from backend.services.gpu_arbiter import GPU_ARBITER
 
 REPO_ROOT = core.REPO_ROOT
 TIMBRE_DIR = core.CONFIG_DIR / "timbre"
@@ -378,9 +379,18 @@ class TimbreBackend:
 
         def _run() -> None:
             try:
-                result = self.convert(
-                    source, profile_id, config, topk=topk, device=device, progress=_progress
-                )
+                # A conversion can take minutes, so it waits for the card instead
+                # of failing after the 60 s interactive timeout. The lease is
+                # released as soon as the block exits, including on error.
+                with GPU_ARBITER.lease(
+                    "timbre",
+                    job_id=job_id,
+                    label=f"音色转换 {source.name}",
+                    timeout=None,
+                ):
+                    result = self.convert(
+                        source, profile_id, config, topk=topk, device=device, progress=_progress
+                    )
             except Exception as exc:
                 self._update(
                     job_id,
@@ -437,7 +447,15 @@ class TimbreBackend:
 
         def _run() -> None:
             try:
-                result = self.build_profile(profile_id, config, progress=_progress, device=device)
+                # Encoding the reference corpus is slow and may run for minutes;
+                # wait for the card rather than failing on the default timeout.
+                with GPU_ARBITER.lease(
+                    "timbre",
+                    job_id=job_id,
+                    label=f"音色匹配池 {profile_id}",
+                    timeout=None,
+                ):
+                    result = self.build_profile(profile_id, config, progress=_progress, device=device)
             except Exception as exc:
                 self._update(
                     job_id,

@@ -1,33 +1,22 @@
 # -*- coding: utf-8 -*-
-"""广普"轻中浓度"转换规则（CLI 与 WebUI 共用）。
+"""广普文本转换兼容入口（CLI 与 WebUI 共用）。
 
-维护说明：改这里即可同时影响命令行与 WebUI 合成。
-规则顺序很重要：长词在前，避免"是"先吃掉"不是/是不是"。
+真正的档位规则位于 ``backend.services.pronunciation``。本模块保留旧的
+``to_lightmid`` 名称，并将它委托给 heavy 档，因为旧调用语义最接近 heavy。
+固定搭配的保护在渲染时生效；``safe_name`` 的行为保持不变。
 """
 
 import re
 
-# 轻中浓度：普通话台词 -> 广普混合写法
-WORD_RULES = [
-    ("是不是", "系唔系"),
-    ("不是", "唔系"),
-    ("什么人", "咩人"),
-    ("最重要", "最紧要"),
-    ("什么", "乜嘢"),
-    ("没有", "冇"),
-    ("没", "冇"),
-    ("你说", "你话"),
-    ("我说", "我话"),
-    ("的", "嘅"),
-    ("是", "系"),
-]
+from backend.services.pronunciation import HEAVY_REPLACEMENTS, build_pronunciation_plan
+
+# 兼容可能直接导入旧规则表的调用方。顺序按长词优先排列。
+WORD_RULES = list(HEAVY_REPLACEMENTS)
 
 
 def to_lightmid(text: str) -> str:
-    """把普通话台词转成轻中浓度广普写法；设为 0 关闭时由调用方直接透传。"""
-    for src, dst in WORD_RULES:
-        text = text.replace(src, dst)
-    return text
+    """旧接口：按 heavy 档转换文本，并保留固定搭配。"""
+    return build_pronunciation_plan(text, accent_level="heavy").rendered_text
 
 
 def safe_name(text: str) -> str:

@@ -27,6 +27,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from backend.services.gpu_arbiter import GPU_ARBITER
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = REPO_ROOT / ".guangpu_webui"
 TRAIN_STATE_FILE = CONFIG_DIR / "train_state.json"
@@ -383,69 +385,74 @@ def start_job(step, title, cmds, pre=None, progress_meta=None):
     def _run():
         rc = 0
         try:
-            TRAIN_LOGS_DIR.mkdir(parents=True, exist_ok=True)
-            with open(log, "wb") as f:
-                if pre is not None:
-                    try:
-                        pre()
-                    except Exception as exc:
-                        f.write(f"[准备失败] {exc}\n".encode("utf-8", "replace"))
-                        rc = 1
-                if rc == 0:
-                    for cmd, cwd, env in cmds:
-                        stage = _stage_for_command(cmd)
-                        if stage:
-                            epochs = _stage_epochs(stage, progress_meta)
-                            _update_step(
-                                step,
-                                current_stage=stage,
-                                progress=parse_training_progress(
-                                    "", stage=stage, epochs=epochs,
-                                    initial=load_state()["steps"].get(step, {}).get("progress"),
-                                ),
-                            )
-                        f.write(("\n$ " + " ".join(cmd) + f"  (cwd={cwd})\n").encode("utf-8", "replace"))
-                        f.flush()
+            # 训练及其前置步骤（Whisper 识别、特征提取）都可能占用 GPU，且一跑
+            # 就是几十分钟到数小时。整个 _run 持有租约、无超时排队：任务本身会
+            # 上报进度，不能因为前面有长任务就把它判失败。训练子进程仍在本进程
+            # 之外，租约只负责协调同进程内的 WebUI 任务。
+            with GPU_ARBITER.lease("training", job_id=job_id, label=title, timeout=None):
+                TRAIN_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                with open(log, "wb") as f:
+                    if pre is not None:
                         try:
-                            proc = subprocess.Popen(
-                                cmd,
-                                cwd=cwd,
-                                env=env,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT,
-                                creationflags=_CREATE_NO_WINDOW,
-                            )
+                            pre()
                         except Exception as exc:
-                            f.write(f"[启动失败] {exc}\n".encode("utf-8", "replace"))
+                            f.write(f"[准备失败] {exc}\n".encode("utf-8", "replace"))
                             rc = 1
-                            break
-                        with _JOBS_LOCK:
-                            _JOBS[job_id]["proc"] = proc
-                        # 实时转发子进程输出，并消费 \r 进度行（Lightning tqdm 常用 \r 刷新）。
-                        try:
-                            pending = b""
-                            while True:
-                                reader = getattr(proc.stdout, "read1", proc.stdout.read)
-                                chunk = reader(4096)
-                                if not chunk:
-                                    break
-                                f.write(chunk)
-                                f.flush()
-                                sys.stdout.buffer.write("  [训练] ".encode("utf-8") + chunk)
-                                sys.stdout.buffer.flush()
-                                pending += chunk
-                                parts = re.split(br"[\r\n]", pending)
-                                pending = parts.pop()
-                                for raw_line in parts:
-                                    _record_progress(step, stage, raw_line.decode("utf-8", "replace"), progress_meta)
-                            if pending:
-                                _record_progress(step, stage, pending.decode("utf-8", "replace"), progress_meta)
-                        except Exception:
-                            pass
-                        rc = proc.wait()
-                        if rc != 0:
-                            f.write(f"\n[退出码 {rc}]\n".encode("utf-8", "replace"))
-                            break
+                    if rc == 0:
+                        for cmd, cwd, env in cmds:
+                            stage = _stage_for_command(cmd)
+                            if stage:
+                                epochs = _stage_epochs(stage, progress_meta)
+                                _update_step(
+                                    step,
+                                    current_stage=stage,
+                                    progress=parse_training_progress(
+                                        "", stage=stage, epochs=epochs,
+                                        initial=load_state()["steps"].get(step, {}).get("progress"),
+                                    ),
+                                )
+                            f.write(("\n$ " + " ".join(cmd) + f"  (cwd={cwd})\n").encode("utf-8", "replace"))
+                            f.flush()
+                            try:
+                                proc = subprocess.Popen(
+                                    cmd,
+                                    cwd=cwd,
+                                    env=env,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    creationflags=_CREATE_NO_WINDOW,
+                                )
+                            except Exception as exc:
+                                f.write(f"[启动失败] {exc}\n".encode("utf-8", "replace"))
+                                rc = 1
+                                break
+                            with _JOBS_LOCK:
+                                _JOBS[job_id]["proc"] = proc
+                            # 实时转发子进程输出，并消费 \r 进度行（Lightning tqdm 常用 \r 刷新）。
+                            try:
+                                pending = b""
+                                while True:
+                                    reader = getattr(proc.stdout, "read1", proc.stdout.read)
+                                    chunk = reader(4096)
+                                    if not chunk:
+                                        break
+                                    f.write(chunk)
+                                    f.flush()
+                                    sys.stdout.buffer.write("  [训练] ".encode("utf-8") + chunk)
+                                    sys.stdout.buffer.flush()
+                                    pending += chunk
+                                    parts = re.split(br"[\r\n]", pending)
+                                    pending = parts.pop()
+                                    for raw_line in parts:
+                                        _record_progress(step, stage, raw_line.decode("utf-8", "replace"), progress_meta)
+                                if pending:
+                                    _record_progress(step, stage, pending.decode("utf-8", "replace"), progress_meta)
+                            except Exception:
+                                pass
+                            rc = proc.wait()
+                            if rc != 0:
+                                f.write(f"\n[退出码 {rc}]\n".encode("utf-8", "replace"))
+                                break
         finally:
             with _JOBS_LOCK:
                 if _JOBS.get(job_id):

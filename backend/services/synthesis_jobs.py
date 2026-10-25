@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import threading
 import time
 from dataclasses import dataclass, field
@@ -131,6 +132,26 @@ class SynthesisJobManager:
             return None
         with job.lock:
             return _snapshot(job.snapshot)
+
+    def list_snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent job snapshots, newest first, as deep copies.
+
+        Read-only on purpose: this exists for the job registry / WebUI to list
+        every running task without handing out the manager's internal objects.
+        """
+        try:
+            count = max(0, int(limit))
+        except (TypeError, ValueError):
+            count = 50
+        if count == 0:
+            return []
+        with self._lock:
+            jobs = list(self._jobs.values())[-count:]
+        snapshots: list[dict[str, Any]] = []
+        for job in reversed(jobs):
+            with job.lock:
+                snapshots.append(copy.deepcopy(job.snapshot))
+        return snapshots
 
     def update(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         job = self._jobs.get(job_id)

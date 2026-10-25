@@ -117,11 +117,11 @@ def test_composed_mixed_text_inserts_pauses_at_language_boundaries():
     ) == "Hello,欢迎"
 
 
-def test_mixed_render_skips_lightmid_conversion():
+def test_mixed_render_applies_accent_only_to_chinese():
     assert core.render_language_segments(
         [("zh", "不是"), ("en", "Hello")],
         {"auto_lightmid": True, "text_lang": "zh"},
-    ) == [("zh", "不是"), ("en", "Hello")]
+    ) == [("zh", "唔系"), ("en", "Hello")]
 
 
 def test_english_pronunciation_hint_spells_initialisms_without_expanding_surface_text():

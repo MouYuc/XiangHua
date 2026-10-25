@@ -25,7 +25,9 @@ import numpy as np
 import soundfile as sf
 
 from tools.env import resolve_default_environment_root
-from tools.rules import safe_name, to_lightmid
+from backend.services.gpu_arbiter import GPU_ARBITER, GpuBusyTimeout
+from backend.services.pronunciation import AccentLevel, PronunciationPlan, build_pronunciation_plan
+from tools.rules import safe_name
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +64,61 @@ _ACCEPTABLE_SEGMENT_DURATION_RATIO = 0.80
 # flags a delivery that is broken rather than quick. Measured failure case: 0.08 s
 # against an expected 2.6 s, i.e. 3%.
 SHORT_OUTPUT_RATIO = 0.25
+PRONUNCIATION_MANIFEST_SCHEMA_VERSION = 1
+PRONUNCIATION_MANIFEST_FILENAME = "pronunciation.json"
+# --- 读回自选 take（零样本路线的可靠性杠杆）--------------------------------
+# 时长检查救不了"时长正常但吞字/读错"的坏 take（实测 clear_02：2.30s 对预期
+# 2.16s，结尾两个字没读出来）。这里用本地 SenseVoice 读回做灾难检测，超过阈值
+# 就换种子再合成一次、在真实存在的 take 里选可懂的那个。这是选 take 不是刷分：
+# 阈值(15%)故意高于回归验收线(5%)，只救灾难，不追求完美；非中文与显式混语行
+# 不参与，读回模型不可用时静默保留首 take。
+_TAKE_SELECTION_CER_THRESHOLD = 0.15
+_TAKE_SELECTION_MAX_TAKES = 3
+_TAKE_SEED_STRIDE = 7 * 104_729
+
+
+class _ReadbackJudge:
+    """Lazy SenseVoice readback for take selection; unavailable means no opinion."""
+
+    def __init__(self) -> None:
+        self._attempted = False
+        self._model: Any = None
+        self._cer: Any = None
+        self.reason = ""
+
+    def _ensure(self) -> None:
+        if self._attempted:
+            return
+        self._attempted = True
+        try:
+            scripts = REPO_ROOT / "scripts"
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from asr_readback import cer as cer_function
+            from five_language_verify import LanguageIdentifier
+
+            self._cer = cer_function
+            self._model = LanguageIdentifier()
+        except Exception as exc:  # a missing judge must never break synthesis
+            self.reason = f"{type(exc).__name__}: {exc}"
+
+    def cer(self, audio_path: Path, reference_text: str) -> float | None:
+        """Readback CER against the rendered text; None means "no opinion"."""
+        self._ensure()
+        if self._model is None or self._cer is None:
+            return None
+        try:
+            identified = self._model.identify(str(audio_path), use_itn=False)
+            hypothesis = re.sub(r"<\|[^|]+\|>", "", str(identified.get("text") or "")).strip()
+            if not hypothesis:
+                return None
+            return float(self._cer(reference_text, hypothesis))
+        except Exception as exc:
+            self.reason = f"{type(exc).__name__}: {exc}"
+            return None
+
+
+READBACK_JUDGE = _ReadbackJudge()
 
 
 @dataclass(frozen=True)
@@ -94,9 +151,11 @@ def default_config() -> dict[str, Any]:
         "pause_second": float(os.environ.get("PAUSE_SECOND", "0.15")),
         "voice_profile_id": os.environ.get("VOICE_PROFILE_ID", "current"),
         "accent_id": os.environ.get("ACCENT_ID", "standard"),
+        "accent_level": os.environ.get("ACCENT_LEVEL", "off"),
+        "take_selection": os.environ.get("TAKE_SELECTION", "1") != "0",
         "mixed_eos_floor": None,
         "mixed_token_cap": None,
-        "auto_lightmid": os.environ.get("AUTO_LIGHTMID", "1") == "1",
+        "auto_lightmid": os.environ.get("AUTO_LIGHTMID", "0") == "1",
         "theme": os.environ.get("GP_THEME", "auto"),
         **ORB_COLOR_DEFAULTS,
     }
@@ -119,6 +178,8 @@ def load_config() -> dict[str, Any]:
         cfg[field] = value if re.fullmatch(r"#[0-9A-F]{6}", value) else default
     if cfg.get("theme") not in {"auto", "light-green", "light-blue", "dark", "nymbo"}:
         cfg["theme"] = "auto"
+    if cfg.get("accent_level") not in {level.value for level in AccentLevel}:
+        cfg["accent_level"] = "off"
     return cfg
 
 
@@ -320,9 +381,38 @@ def backend_cwd(root: str) -> Iterator[None]:
         os.chdir(previous)
 
 
+def configured_accent_level(cfg: dict[str, Any]) -> str:
+    """Resolve the staged accent level, with the legacy toggle as a fallback.
+
+    ``auto_lightmid`` used to mean a global 的/是 rewrite. New callers should set
+    ``accent_level`` explicitly. When an old request supplies only the toggle, map it
+    to ``medium``: the unambiguous phrase rules still apply, but the global rewrite
+    that damaged intelligibility does not.
+    """
+    raw = cfg.get("accent_level")
+    if raw in {level.value for level in AccentLevel}:
+        return str(raw)
+    return "medium" if cfg.get("auto_lightmid") else "off"
+
+
+def render_with_plan(text: str, cfg: dict[str, Any]) -> PronunciationPlan:
+    """Build the staged pronunciation plan used for one line or segment.
+
+    This is the single construction point shared by text rendering and the output
+    manifest. ``configured_accent_level`` keeps the legacy ``auto_lightmid`` toggle
+    mapped to ``medium``, so old requests render exactly as they did before the
+    plan itself was persisted.
+    """
+    return build_pronunciation_plan(
+        text,
+        language=str(cfg.get("text_lang", "zh")),
+        accent_level=configured_accent_level(cfg),
+    )
+
+
 def render_synthesis_text(text: str, cfg: dict[str, Any]) -> str:
-    """Apply the Guangpu conversion only to Chinese synthesis text."""
-    return to_lightmid(text) if cfg.get("auto_lightmid") and cfg.get("text_lang", "zh") == "zh" else text
+    """Apply the staged pronunciation plan only to Chinese synthesis text."""
+    return render_with_plan(text, cfg).rendered_text
 
 
 def parse_language_segments(text: str, default_language: str = "zh") -> list[SynthesisSegment]:
@@ -373,22 +463,80 @@ def parse_language_segments(text: str, default_language: str = "zh") -> list[Syn
 
 
 def render_language_segments(segments: list[SynthesisSegment], cfg: dict[str, Any]) -> list[SynthesisSegment]:
-    """Apply language-specific rendering (currently Guangpu conversion) segment by segment."""
-    mixed_language = len({language for language, segment in segments if segment.strip()}) > 1
+    """Apply staged pronunciation rules to each explicit language segment.
+
+    The pronunciation layer is language-aware and leaves non-Chinese text untouched,
+    so a mixed line no longer has to disable accent handling globally. That old
+    behaviour made one English fragment silently switch off pronunciation for the
+    whole line.
+    """
     return [
         (
             language,
-            render_synthesis_text(
-                segment,
-                {
-                    **cfg,
-                    "text_lang": language,
-                    "auto_lightmid": cfg.get("auto_lightmid") and not mixed_language,
-                },
-            ),
+            render_synthesis_text(segment, {**cfg, "text_lang": language}),
         )
         for language, segment in segments
     ]
+
+
+def _merge_pronunciation_plans(
+    line: str, rendered: str, plans: list[PronunciationPlan]
+) -> PronunciationPlan:
+    """Fold per-segment plans into the single plan persisted for a source line.
+
+    Replacement offsets are rebased from the segment text into the full source
+    line. Segments appear in source order, so the first occurrence at or after the
+    previous segment is the correct anchor even when the line repeats itself. If a
+    punctuation merge made a segment no longer contiguous, that segment's offsets
+    stay relative to the segment text instead of being guessed.
+    """
+    languages = [plan.language for plan in plans]
+    chinese_plans = [plan for plan in plans if plan.lexicon_id != "none"]
+    replacements: list[dict[str, Any]] = []
+    cursor = 0
+    for plan in plans:
+        base = line.find(plan.source_text, cursor)
+        for item in plan.replacements:
+            merged = dict(item)
+            if base >= 0 and isinstance(merged.get("start"), int) and isinstance(merged.get("end"), int):
+                merged["start"] += base
+                merged["end"] += base
+            replacements.append(merged)
+        if base >= 0:
+            cursor = base + len(plan.source_text)
+    return PronunciationPlan(
+        source_text=line,
+        rendered_text=rendered,
+        language=languages[0] if len(set(languages)) == 1 else "mixed",
+        lexicon_id=chinese_plans[0].lexicon_id if chinese_plans else "none",
+        accent_pack_id=chinese_plans[0].accent_pack_id if chinese_plans else "none",
+        accent_intensity=max((plan.accent_intensity for plan in plans), default=0.0),
+        replacements=replacements,
+        protected_terms=list(
+            dict.fromkeys(term for plan in chinese_plans for term in plan.protected_terms)
+        ),
+    )
+
+
+def render_line_with_plan(
+    line: str, cfg: dict[str, Any]
+) -> tuple[list[SynthesisSegment], PronunciationPlan, str]:
+    """Render one source line, building each segment's plan exactly once.
+
+    The aggregate plan covers the whole line, so downstream manifest writers get a
+    ``rendered_text`` that is byte-for-byte the text handed to the engine.
+    """
+    segments = parse_language_segments(line, cfg.get("text_lang", "zh"))
+    plans = [
+        render_with_plan(segment, {**cfg, "text_lang": language})
+        for language, segment in segments
+    ]
+    rendered_segments = [
+        (language, plan.rendered_text)
+        for (language, _), plan in zip(segments, plans)
+    ]
+    rendered = " ".join(segment for _, segment in rendered_segments)
+    return rendered_segments, _merge_pronunciation_plans(line, rendered, plans), rendered
 
 
 _WORDLIKE_ENGLISH_ABBREVIATIONS = frozenset({
@@ -746,6 +894,15 @@ class SynthesisBackend:
         def run() -> None:
             try:
                 self.ensure(cfg)
+            except GpuBusyTimeout as exc:
+                # A batch or training job owns the card; that is not a broken
+                # configuration, so report it as idle and let the next call retry.
+                with self._lock:
+                    self._warmup = {
+                        "status": "idle",
+                        "message": "GPU 正忙，预热稍后再试。",
+                        "error": str(exc),
+                    }
             except Exception as exc:
                 with self._lock:
                     self._warmup = {
@@ -761,6 +918,16 @@ class SynthesisBackend:
         return self.warmup_status()
 
     def ensure(self, cfg: dict[str, Any]) -> None:
+        """Load or swap the model pair while holding the GPU lease.
+
+        ``ensure`` can reload weights, so it must never run outside a lease: a
+        warm-up retry would otherwise swap models under a running batch. The lease
+        is re-entrant, so callers that already hold it pay nothing.
+        """
+        with GPU_ARBITER.lease("model_load", label="加载 GPT-SoVITS 模型"):
+            self._ensure_locked(cfg)
+
+    def _ensure_locked(self, cfg: dict[str, Any]) -> None:
         root = os.path.abspath(str(cfg["gpt_sovits_root"]))
         with self._lock:
             pair = (str(cfg["gpt_model"]), str(cfg["sovits_model"]))
@@ -986,6 +1153,79 @@ def _emit_event(event_cb: Any | None, event_type: str, **payload: Any) -> None:
         event_cb({"type": event_type, **payload})
 
 
+def build_pronunciation_manifest(
+    cfg: dict[str, Any],
+    plans: list[PronunciationPlan],
+    outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Summarise the per-line pronunciation plans into the output manifest.
+
+    The manifest is intentionally redundant with each output's ``pronunciation``
+    block: readers who only have the output directory must be able to audit what
+    text was actually sent to the engine without parsing the job snapshots.
+    """
+    lexicon_id = "none"
+    accent_pack_id = "none"
+    accent_intensity = 0.0
+    protected_terms: list[str] = []
+    for plan in plans:
+        accent_intensity = max(accent_intensity, plan.accent_intensity)
+        if plan.lexicon_id == "none":
+            continue
+        if lexicon_id == "none":
+            lexicon_id = plan.lexicon_id
+            accent_pack_id = plan.accent_pack_id
+        for term in plan.protected_terms:
+            if term not in protected_terms:
+                protected_terms.append(term)
+
+    manifest_lines: list[dict[str, Any]] = []
+    for position, output in enumerate(outputs):
+        pronunciation = output.get("pronunciation")
+        if not isinstance(pronunciation, dict):
+            pronunciation = plans[position].to_dict() if position < len(plans) else {}
+        manifest_lines.append({
+            "index": int(output.get("output_index", position)) + 1,
+            "source_text": str(pronunciation.get("source_text") or output.get("text") or ""),
+            "rendered_text": str(output.get("rendered_text") or pronunciation.get("rendered_text") or ""),
+            "language": str(pronunciation.get("language") or ""),
+            "lexicon_id": str(pronunciation.get("lexicon_id") or "none"),
+            "accent_pack_id": str(pronunciation.get("accent_pack_id") or "none"),
+            "accent_intensity": float(pronunciation.get("accent_intensity") or 0.0),
+            "protected_terms": list(pronunciation.get("protected_terms") or []),
+            "replacements": [dict(item) for item in (pronunciation.get("replacements") or [])],
+            "file": str(output.get("file") or ""),
+            "error": str(output.get("error") or ""),
+        })
+
+    return {
+        "schema_version": PRONUNCIATION_MANIFEST_SCHEMA_VERSION,
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "accent_level": configured_accent_level(cfg),
+        "text_lang": str(cfg.get("text_lang", "zh")),
+        "lexicon_id": lexicon_id,
+        "accent_pack_id": accent_pack_id,
+        "accent_intensity": accent_intensity,
+        "protected_terms": protected_terms,
+        "line_count": len(manifest_lines),
+        "lines": manifest_lines,
+    }
+
+
+def write_pronunciation_manifest(destination: Path, manifest: dict[str, Any]) -> Path:
+    """Write ``pronunciation.json`` atomically into one synthesis output directory."""
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / PRONUNCIATION_MANIFEST_FILENAME
+    temporary = destination / f"{PRONUNCIATION_MANIFEST_FILENAME}.tmp"
+    try:
+        temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return target
+
+
 def synthesize_lines(
     cfg: dict[str, Any],
     text: str,
@@ -997,6 +1237,23 @@ def synthesize_lines(
     if not lines:
         raise ValueError("台词为空，请先输入内容。")
     validate_synthesis_language_text(text, cfg)
+    # Hold the GPU for the whole batch, including ``ensure``: a second job that
+    # swapped weights between two lines would silently change the voice of the
+    # take in progress. The validation above stays outside the lease so a bad
+    # request fails immediately instead of queueing behind a long job. A busy
+    # card raises GpuBusyTimeout, which callers surface as a user-facing error.
+    with GPU_ARBITER.lease("synthesis", job_id="", label=f"合成 {len(lines)} 句"):
+        return _synthesize_lines_locked(cfg, lines, output_dir, progress_cb, event_cb)
+
+
+def _synthesize_lines_locked(
+    cfg: dict[str, Any],
+    lines: list[str],
+    output_dir: Path | None = None,
+    progress_cb: Any | None = None,
+    event_cb: Any | None = None,
+) -> dict[str, Any]:
+    """Synthesise already-validated lines; the caller must hold the GPU lease."""
     SYNTHESIS_BACKEND.ensure(cfg)
     destination = output_dir or new_output_dir()
     outputs: list[dict[str, Any]] = []
@@ -1015,9 +1272,10 @@ def synthesize_lines(
     total_segment_count = 0
     total_acoustic_inference_calls = 0
     used_explicit_mixed = False
+    line_plans: list[PronunciationPlan] = []
     for index, line in enumerate(lines, 1):
-        rendered_segments = render_language_segments(parse_language_segments(line, cfg.get("text_lang", "zh")), cfg)
-        rendered = " ".join(segment for _, segment in rendered_segments)
+        rendered_segments, line_plan, rendered = render_line_with_plan(line, cfg)
+        line_plans.append(line_plan)
         line_segment_count = len(rendered_segments)
         line_is_explicit_mixed = line_segment_count > 1 and len({language for language, _ in rendered_segments}) > 1
         line_synthesis_mode = "single_pass_explicit" if line_is_explicit_mixed else "legacy_single"
@@ -1065,11 +1323,86 @@ def synthesize_lines(
             )
 
         try:
-            audio, sample_rate = SYNTHESIS_BACKEND.synth_segments(cfg, rendered_segments, semantic_token_cb=report_semantic_token)
-            line_acoustic_inference_calls = max(
-                1 if line_is_explicit_mixed else 0,
-                int(getattr(SYNTHESIS_BACKEND._inference_calls, "count", 0)),
+            # Take selection: judge the delivered audio by readback, retry with a
+            # derived seed only on catastrophes. Take 0 always uses the caller's
+            # cfg verbatim, so behaviour for good takes is byte-identical to the
+            # single-shot path.
+            line_acoustic_inference_calls = 0
+            take_eligible = (
+                bool(cfg.get("take_selection", True))
+                and not line_is_explicit_mixed
+                and str(cfg.get("text_lang") or "zh") == "zh"
             )
+            base_line_seed = (
+                int(cfg["seed"])
+                if "seed" in cfg
+                else deterministic_language_seed("line", rendered or line, cfg)
+            )
+            max_takes = _TAKE_SELECTION_MAX_TAKES if take_eligible else 1
+            candidates: list[dict[str, Any]] = []
+            for take_index in range(max_takes):
+                take_cfg = (
+                    cfg
+                    if take_index == 0
+                    else {**cfg, "seed": (base_line_seed + take_index * _TAKE_SEED_STRIDE) & 0xFFFFFFFF}
+                )
+                semantic_token_count = 0
+                semantic_frame_rate = 0
+                audio, sample_rate = SYNTHESIS_BACKEND.synth_segments(
+                    take_cfg, rendered_segments, semantic_token_cb=report_semantic_token
+                )
+                line_acoustic_inference_calls += max(
+                    1 if line_is_explicit_mixed else 0,
+                    int(getattr(SYNTHESIS_BACKEND._inference_calls, "count", 0)),
+                )
+                produced_seconds = len(np.asarray(audio)) / float(sample_rate or 1)
+                expected_seconds = expected_segment_duration(
+                    rendered or line, "zh", float(cfg.get("speed", 1))
+                )
+                short_take = produced_seconds < max(0.6, expected_seconds * SHORT_OUTPUT_RATIO)
+                take_cer: float | None = None
+                if take_eligible:
+                    destination.mkdir(parents=True, exist_ok=True)
+                    take_wav = destination / f".take_{index:03d}_{take_index}.wav"
+                    try:
+                        sf.write(str(take_wav), np.asarray(audio), int(sample_rate or 32000))
+                        take_cer = READBACK_JUDGE.cer(take_wav, rendered or line)
+                    finally:
+                        take_wav.unlink(missing_ok=True)
+                acceptable = (not short_take) and (
+                    take_cer is None or take_cer <= _TAKE_SELECTION_CER_THRESHOLD
+                )
+                candidates.append(
+                    {
+                        "index": take_index,
+                        "audio": audio,
+                        "sample_rate": sample_rate,
+                        "cer": take_cer,
+                        "short": short_take,
+                        "acceptable": acceptable,
+                    }
+                )
+                if acceptable:
+                    break
+
+            acceptable_takes = [item for item in candidates if item["acceptable"]]
+            if acceptable_takes:
+                chosen = acceptable_takes[0]
+            else:
+                # Nothing passed: keep the least-bad take — shortest disaster first,
+                # then the best readback, then the earliest take.
+                chosen = min(
+                    candidates,
+                    key=lambda item: (
+                        item["short"],
+                        item["cer"] if item["cer"] is not None else 2.0,
+                        item["index"],
+                    ),
+                )
+            audio = chosen["audio"]
+            sample_rate = chosen["sample_rate"]
+            selected_take = chosen["index"]
+            take_cers = [item["cer"] for item in candidates]
             total_acoustic_inference_calls += line_acoustic_inference_calls
             path = save_audio(audio, sample_rate, destination, base)
             # A take this far short of what the text needs was not really synthesised.
@@ -1085,6 +1418,8 @@ def synthesize_lines(
             outputs.append({
                 "text": line,
                 "rendered_text": rendered,
+                "accent_level": configured_accent_level(cfg),
+                "pronunciation": line_plan.to_dict(),
                 "file": str(path),
                 "download_id": register_download(path),
                 "error": "",
@@ -1097,6 +1432,9 @@ def synthesize_lines(
                 "duration": round(produced_seconds, 3),
                 "expected_duration": round(expected_seconds, 3),
                 "suspiciously_short": suspiciously_short,
+                "takes": len(candidates),
+                "selected_take": selected_take,
+                "take_cers": take_cers,
                 "warning": (
                     f"生成音频只有 {produced_seconds:.2f}s，远短于这段文本应有的 "
                     f"{expected_seconds:.2f}s，很可能没有真正合成出来。"
@@ -1117,7 +1455,9 @@ def synthesize_lines(
                 acoustic_inference_calls=line_acoustic_inference_calls,
             )
         except Exception as exc:
-            line_acoustic_inference_calls = max(
+            # Add the failed attempt's calls instead of overwriting: with take
+            # selection earlier takes may already have spent inference calls.
+            line_acoustic_inference_calls += max(
                 1 if line_is_explicit_mixed else 0,
                 int(getattr(SYNTHESIS_BACKEND._inference_calls, "count", 0)),
             )
@@ -1126,6 +1466,8 @@ def synthesize_lines(
             outputs.append({
                 "text": line,
                 "rendered_text": rendered,
+                "accent_level": configured_accent_level(cfg),
+                "pronunciation": line_plan.to_dict(),
                 "file": "",
                 "download_id": "",
                 "error": error,
@@ -1154,6 +1496,13 @@ def synthesize_lines(
         })
 
     completed = [item for item in outputs if item["file"]]
+    pronunciation_manifest = ""
+    pronunciation_manifest_error = ""
+    try:
+        manifest = build_pronunciation_manifest(cfg, line_plans, outputs)
+        pronunciation_manifest = str(write_pronunciation_manifest(destination, manifest))
+    except Exception as exc:  # a manifest failure must not discard finished audio
+        pronunciation_manifest_error = f"{type(exc).__name__}: {exc}"
     append_history([
         {"time": datetime.now().strftime("%m-%d %H:%M"), "text": item["text"], "params": f"t{cfg['temperature']}/s{cfg['sample_steps']}/text={cfg.get('text_lang', 'zh')}/prompt={cfg.get('prompt_lang', 'zh')}", "name": Path(item["file"]).name, "file": item["file"], "download_id": item["download_id"]}
         for item in completed
@@ -1166,6 +1515,8 @@ def synthesize_lines(
         "synthesis_mode": "single_pass_explicit" if used_explicit_mixed else "legacy_single",
         "segment_count": total_segment_count,
         "acoustic_inference_calls": total_acoustic_inference_calls,
+        "pronunciation_manifest": pronunciation_manifest,
+        "pronunciation_manifest_error": pronunciation_manifest_error,
     }
     _emit_progress(progress_cb, {
         "status": "done",
@@ -1182,5 +1533,7 @@ def synthesize_lines(
         "synthesis_mode": result["synthesis_mode"],
         "segment_count": result["segment_count"],
         "acoustic_inference_calls": result["acoustic_inference_calls"],
+        "pronunciation_manifest": pronunciation_manifest,
+        "pronunciation_manifest_error": pronunciation_manifest_error,
     })
     return result
