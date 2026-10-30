@@ -106,6 +106,32 @@
 
 ---
 
+## 0h. 2026-10-25 市场调研与下一期功能决策（用户拍板）
+
+**调研背景**：全项目实测评审 + 竞品调研后用提问卡确认方向。关键信号：Replica Studios（游戏声音 AI 先发者）2025-06-30 关站留出空位；ElevenLabs Iconic Voice Marketplace + Voice Library 分成验证了"声线=可授权资产"；开源表现力天花板已是 IndexTTS2/2.5（B 站，情感与音色解耦 + 精确时长控制），GPT-SoVITS 在"表现力"心智上落后；短剧译制/配音工具为红海，不碰全管线；国内 C 端价格被打穿，只能按角色/项目授权定价。
+
+**用户决策（提问卡确认）**：
+
+1. **P0 三项全做**：整集批量生产 + SRT 时间戳；多角色对话编排（角色绑声线卡 → 逐句合成 → 整集/分轨导出）；情感/表现力控制。
+2. **情感技术路线**：评估接入 IndexTTS2 为第二引擎（与四层分离同哲学），先出「接入 vs 自研」评估结论再定，不在 GPT-SoVITS 上硬追。
+3. **P1 本轮包含**：发音词典用户入口（多音字/专名读音修正，把 PronunciationPlan 积累产品化）；输出水印 + C2PA 溯源（license_id/consent_id 从字段变可验证资产）。
+4. **商业验证路径**：先补 B2B 平台（API Key/配额/租户/持久化队列；2026-10-25 已落的 RequestGuard + XIANGHUA_API_KEY 是第一步），平台扎实后再找短剧团队试点。
+
+**建议执行顺序**：批量+SRT（纯产品化、最快）→ 对话编排（依赖批量）→ IndexTTS2 评估（并行启动，两周出结论）→ 发音词典入口 → 水印+C2PA → 租户/配额/持久化队列。
+
+## 0i. 2026-10-25 晚：0h 决策当日落地（除 IndexTTS2 评估外全部上线）
+
+按 0h 决策当日完成 P0 两项 + P1 两项 + B2B 第一阶段，全量回归后端 **493 passed / 1 skipped**、前端 **50 passed**、build 通过：
+
+- **整集交付**（P0-2）：`backend/services/batch_production.py`——SRT 累计时间轴（`【角色】`前缀）、ffmpeg concat 整集音轨、按角色分轨；`POST /batch/export`（任务完成后可导出）；工作台出现「导出整集」按钮。
+- **多角色对话编排**（P0-3）：`backend/services/dialogue.py`——`名字：台词` 剧本解析（无冒号归旁白）、角色绑声线卡逐句合成、单句失败（含卡不存在）不中断；`POST /dialogue/synthesis|export`、`GET /dialogue/status/{id}`；导出含每角色分轨。
+- **发音词典用户入口**（P1-1）：`backend/services/user_lexicon.py`（`.guangpu_webui/lexicon.json`，上限 500 条）；`build_pronunciation_plan` 新增 `user_overrides` 参数——**用户词典在所有口音档位（含 off）都生效，优先级高于口音规则与固定搭配保护**，replacements 带 `origin: user_lexicon|accent` 便于审计；设置弹窗内增删；只改读音不改字幕。
+- **溯源凭据**（P1-2）：`backend/services/provenance.py`——每条输出写 `<stem>.provenance.json`（HMAC-SHA256 签名，含 file/text sha256、license_id/consent_id 从声线卡自动带出、卡版本）；`POST /provenance/verify` 校验文件+签名；`XIANGHUA_PROVENANCE=0` 可关；测试经 conftest 全局关闭防污染真实配置。
+- **B2B 第一阶段**：`api_keys.py` 多租户注册表（token 只显一次、sha256 落盘、日配额+RPM 滑窗、chars 计量，`/api/api-keys` 管理，`XIANGHUA_API_KEYS_FILE` 启用，`/v1` 按 Key 认证+限流）；`job_store.py` + `synthesis_jobs.enable_persistence()` 合成快照落盘 `.guangpu_webui/jobs/`，重启恢复历史任务（中断标记失败）——已知问题 #8 闭合。
+- **测试**：新增 `test_security_guards`（22）、`test_platform_features`（13）、`test_batch_production`+`test_dialogue`（19）、`test_user_lexicon`（含发音层 12）、`test_provenance`/`test_api_keys`/`test_job_store`（23）；子 Agent 并发限制两次失败后批量/对话服务由 Agent 交付代码、测试由主会话补齐。
+- **IndexTTS2 评估完成**：`docs/INDEX_TTS2_EVALUATION.md`（Agent 三次死于并发限制，主会话自写）。核心结论：**有条件接入**——技术强契合（情感/时长解耦），但 bilibili 自定义许可证**商用需书面授权**（issue #228），授权前只进实验分支不进产出路径；建议 `emotion/duration_hint` 字段先落 API 契约，备选 Apache-2.0 的 CosyVoice-instruct。
+- **未完成**：对话编排的专用前端 UI（API 已就绪，工作台只挂了整集导出按钮）；情感控制实现本体待授权与实验结论。
+
 ## 0. 2026-10-17 清场记录
 
 已删除：

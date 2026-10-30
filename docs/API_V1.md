@@ -1,8 +1,24 @@
 # /v1 API 契约
 
 > 状态：已挂载，与内部 `/api` 共用同一套 handler
-> 更新：2026-10-17
+> 更新：2026-10-25（新增访问控制与限流）
 > 说明：`/v1` 是对外稳定面，`/api` 是 WebUI 内部接口，两者行为一致但只有 `/v1` 承诺兼容性
+
+---
+
+## 0. 访问控制（2026-10-25 起）
+
+所有 `/api` 与 `/v1` 请求先经过 `RequestGuardMiddleware`（`backend/services/request_guard.py`）：
+
+| 策略 | 规则 | 关闭/调整方式 |
+|---|---|---|
+| Host 校验 | `Host` 必须是 `localhost / 127.0.0.1 / [::1]`（防 DNS rebinding） | `XIANGHUA_ALLOWED_HOSTS=a,b` 自定义；`XIANGHUA_ALLOW_REMOTE_HOSTS=1` 关闭（局域网部署时用） |
+| Origin 校验 | 带 `Origin` 的请求只允许本机来源（防 CSRF）；curl/同源 GET 不带 Origin 不受影响 | 无独立开关 |
+| /v1 API Key | 设置 `XIANGHUA_API_KEY=<key>` 后，`/v1` 必须带 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`，否则 401；设置 `XIANGHUA_API_KEYS_FILE=<path>` 进入多租户模式（`/api/api-keys` 管理租户 Key、日配额与 RPM，配额超限返回 429，合成按字符计量） | 两者都不设置即开放（仅限本机回环使用） |
+| 合成队列 | `POST /synthesis` 在排队+运行任务 ≥ 8 时返回 429 `RATE_LIMITED` | `XIANGHUA_SYNTHESIS_QUEUE_MAX=N` |
+| 合成体积 | `POST /synthesis` 请求体 > 1 MiB 返回 413 | `XIANGHUA_SYNTHESIS_MAX_BODY_BYTES=N` |
+
+路径类入参另有圈禁：`/reference-audio/inspect`、`/timbre/convert-file` 只接受仓库目录内的路径（`XIANGHUA_ALLOWED_PATH_ROOTS` 可追加白名单根）；`/environment/select` 只接受扫描发现的候选环境；发音补丁导入默认关闭（`XIANGHUA_ALLOW_PRONUNCIATION_PATCH=1` 开启，且补丁只能改 `GPT_SoVITS/text/` 下文件）；媒体上传默认上限 2 GiB（`XIANGHUA_MAX_MEDIA_BYTES`）。测试见 `backend/tests/test_security_guards.py`。
 
 ---
 
@@ -23,7 +39,7 @@ app.include_router(router, prefix="/v1")
 未知路径一律返回 JSON 404，不会回落到 WebUI 的 `index.html`。
 
 - OpenAPI 文档：`GET /openapi.json`、`GET /docs`
-- 当前规模：59 条路径 × 2 个前缀
+- 当前规模：67 条路径 × 2 个前缀（2026-10-25 新增：`/lexicon`、`/batch/export`、`/dialogue/*`、`/provenance/verify`、`/api-keys`）
 
 ---
 
@@ -40,13 +56,13 @@ app.include_router(router, prefix="/v1")
 
 ## 3. 认证
 
-当前为本地单机部署，**未启用鉴权**。对外开放前会加：
+`/v1` 现在支持两种模式（见 §0）：不设置任何 Key 时仅限本机回环使用；设置 `XIANGHUA_API_KEY` 或 `XIANGHUA_API_KEYS_FILE` 后，每个 `/v1` 请求必须携带：
 
 ```http
 Authorization: Bearer <api_key>
 ```
 
-Key 只存哈希，按 scope 限权（`voices:read` / `jobs:write` / `licenses:read` …），详见 `docs/B2B_VOICE_API_STRATEGY.md`。
+多租户模式下按 Key 计量字符数、限制日请求配额与每分钟速率；Key 只存 SHA-256 哈希。按 scope 细粒度限权（`voices:read` / `jobs:write` / `licenses:read` …）尚未实现，规划见 `docs/B2B_VOICE_API_STRATEGY.md`。
 
 ---
 

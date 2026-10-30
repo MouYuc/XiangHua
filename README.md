@@ -128,6 +128,34 @@ curl.exe http://127.0.0.1:7860/v1/health
 curl.exe http://127.0.0.1:7860/v1/jobs
 ```
 
+### 安全与访问控制
+
+服务默认只应绑定回环地址（`tools/api.py` 默认 `127.0.0.1`）。所有 `/api`、`/v1` 请求经过统一守卫中间件：Host/Origin 校验（防 DNS rebinding 与 CSRF）、`/v1` 可选 API Key、合成队列上限与请求体上限；`inspect`/`convert-file` 等带路径的接口只接受仓库目录内的路径。相关环境变量：
+
+```text
+XIANGHUA_API_KEY=<key>              # 设置后 /v1 需要 Bearer/X-API-Key（/api 供本机 WebUI 免鉴权）
+XIANGHUA_API_KEYS_FILE=<path>       # 多租户模式：密钥注册表 JSON，经 /api/api-keys 管理租户 Key 与配额
+XIANGHUA_ALLOWED_HOSTS=a,b          # 自定义允许的 Host（默认 localhost,127.0.0.1,[::1],testserver）
+XIANGHUA_ALLOW_REMOTE_HOSTS=1       # 局域网部署时关闭 Host 校验（注意：/api 无鉴权，必须放在反向代理之后）
+XIANGHUA_ALLOWED_PATH_ROOTS=G:\dir  # 为路径接口追加白名单根目录
+XIANGHUA_ALLOW_PRONUNCIATION_PATCH=1  # 开启发音补丁导入（默认关闭；补丁只能改 GPT_SoVITS/text/）
+XIANGHUA_MAX_MEDIA_BYTES=2147483648   # 单个媒体上传上限（默认 2 GiB）
+XIANGHUA_SYNTHESIS_QUEUE_MAX=8        # 合成排队+运行任务上限，超出返回 429
+XIANGHUA_SYNTHESIS_MAX_BODY_BYTES=1048576  # 合成请求体上限，超出返回 413
+XIANGHUA_PROVENANCE=0               # 关闭每条输出的签名溯源 sidecar（默认开启）
+```
+
+详见 [docs/API_V1.md](docs/API_V1.md) §0；测试见 `backend/tests/test_security_guards.py`。
+
+### 平台能力（2026-10-25 起）
+
+- **整集交付**：`POST /api/batch/export` 把一次合成任务导出为 `episode.srt`（累计时间轴）+ 拼接整集音轨；工作台完成后出现「导出整集」按钮。
+- **多角色对话编排**：`POST /api/dialogue/synthesis` 接受 `名字：台词` 剧本与「角色 → 声线卡」绑定，逐句合成、单句失败不中断；`POST /api/dialogue/export` 额外产出每角色分轨。
+- **用户发音词典**：`/api/lexicon` 增删查「原词 → 读法」（如 重创 → 虫创），只改引擎读音不改字幕文本，优先级高于口音规则与固定搭配保护；设置弹窗内管理。
+- **溯源凭据**：每条合成输出旁写 `<文件名>.provenance.json`（HMAC-SHA256 签名，含 license_id/consent_id/声线卡版本/文件哈希），`POST /api/provenance/verify` 校验；服务端密钥在 `.guangpu_webui/provenance.key`。
+- **多租户 API Key**：`XIANGHUA_API_KEYS_FILE` 启用后经 `/api/api-keys` 创建/吊销租户 Key（token 只显示一次），每 Key 独立日配额与每分钟限速，`/v1` 按 Key 计量（含合成字符数）。
+- **任务持久化**：合成任务快照落盘 `.guangpu_webui/jobs/`，重启后历史任务可见（中断任务标记为失败）。
+
 ---
 
 ## 目录结构
