@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -45,6 +46,9 @@ DEFAULT_VOICE_CARDS_DIR = CONFIG_DIR / "voice_cards"
 CARD_SCHEMA_VERSION = 1
 TIMBRE_ENCODER = "gpt-sovits-v2pro-zeroshot"
 _STATUS_VALUES = {"active", "retired"}
+# voice_id becomes a directory name; separators (/, \, :) must never reach the
+# filesystem, including percent-decoded Windows backslashes.
+VOICE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
 
 class VoiceAssetError(ValueError):
@@ -186,6 +190,8 @@ class VoiceCardStore:
     # ------------------------------------------------------------------ load
 
     def _card_path(self, voice_id: str) -> Path:
+        if not VOICE_ID_PATTERN.fullmatch(voice_id or ""):
+            raise VoiceCardNotFoundError(f"声线卡不存在：{voice_id}")
         return self.root / voice_id / "card.json"
 
     def _load(self, voice_id: str) -> dict[str, Any]:

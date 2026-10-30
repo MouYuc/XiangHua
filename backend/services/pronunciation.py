@@ -134,16 +134,29 @@ def _rules_for(level: AccentLevel) -> tuple[tuple[str, str], ...]:
 
 
 def _render(
-    source_text: str, rules: tuple[tuple[str, str], ...]
+    source_text: str,
+    rules: tuple[tuple[str, str], ...],
+    user_rules: tuple[tuple[str, str], ...] = (),
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Render one pass over the original text using longest-match-first spans."""
+    """Render one pass over the original text using longest-match-first spans.
+
+    ``user_rules``（用户发音词典）优先于口音规则与固定搭配保护：词典是用户的
+    显式意图，例如为多音字或游戏专名指定 homophone 读法，必须原样生效。
+    """
     protected = set(PROTECTED_TERMS)
-    targets: dict[str, str | None] = {term: None for term in PROTECTED_TERMS}
+    targets: dict[str, str | None] = {}
+    for src, dst in user_rules:
+        targets[src] = dst
+    for term in PROTECTED_TERMS:
+        targets.setdefault(term, None)
     for src, dst in rules:
         targets.setdefault(src, dst)
+    user_sources = {src for src, _ in user_rules}
 
-    # Protected terms are inserted first, so they also win any equal-length tie.
-    entries: list[str] = list(PROTECTED_TERMS) + [src for src, _ in rules]
+    # Priority order inside one length: user lexicon > protected compounds > accent
+    # rules. Longest match still wins first, so a longer accent phrase can beat a
+    # shorter user term — user rules are expected to be specific enough.
+    entries: list[str] = list(user_sources) + list(PROTECTED_TERMS) + [src for src, _ in rules]
     entries.sort(key=lambda value: -len(value))
     pattern = re.compile("|".join(re.escape(value) for value in entries))
 
@@ -164,6 +177,7 @@ def _render(
                     "replacement": target,
                     "start": match.start(),
                     "end": match.end(),
+                    "origin": "user_lexicon" if matched in user_sources else "accent",
                 }
             )
         cursor = match.end()
@@ -175,19 +189,25 @@ def build_pronunciation_plan(
     text: str,
     language: str = "zh",
     accent_level: str | AccentLevel = "off",
+    user_overrides: dict[str, str] | None = None,
 ) -> PronunciationPlan:
     """Build a pronunciation plan without consulting any target audio.
 
     Non-Chinese text passes through unchanged.  For Chinese, the selected level is
     cumulative: light adds unambiguous phrases, medium adds colloquial rules, and
     heavy adds the historical global 的/是 rules while still protecting fixed
-    compounds.
+    compounds.  ``user_overrides`` (the user lexicon) is applied on top of every
+    level — including ``off`` — because an explicit reading correction is not an
+    accent choice.
     """
     if not isinstance(text, str):
         raise TypeError("text 必须是字符串")
 
     level = _coerce_level(accent_level)
     language_text = str(language or "").strip()
+    user_rules = tuple(
+        (str(src), str(dst)) for src, dst in (user_overrides or {}).items() if src and dst
+    )
 
     if not _is_chinese(language_text):
         return PronunciationPlan(
@@ -202,11 +222,11 @@ def build_pronunciation_plan(
         )
 
     rules = _rules_for(level)
-    if level is AccentLevel.OFF:
+    if level is AccentLevel.OFF and not user_rules:
         rendered_text = text
         replacements: list[dict[str, Any]] = []
     else:
-        rendered_text, replacements = _render(text, rules)
+        rendered_text, replacements = _render(text, rules, user_rules)
 
     return PronunciationPlan(
         source_text=text,

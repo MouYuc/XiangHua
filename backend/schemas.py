@@ -161,3 +161,55 @@ class MediaExportRequest(BaseModel):
     require_text: bool = True
     dataset_id: str | None = None
     run_id: str | None = None
+
+
+class LexiconUpsertRequest(BaseModel):
+    """One user pronunciation dictionary entry (term -> homophone reading)."""
+
+    term: str
+    replacement: str
+    note: str = ""
+    enabled: bool = True
+
+
+class BatchExportRequest(BaseModel):
+    """Export one finished synthesis job as an episode package."""
+
+    job_id: str
+
+
+class DialogueSynthesisRequest(BaseModel):
+    """Synthesise a ``名字：台词`` script, one voice card per role.
+
+    ``roles`` maps speaker names to voice card ids; speakers without a binding
+    (including 旁白) use the current saved synthesis config.
+    """
+
+    script: str
+    roles: dict[str, str] = Field(default_factory=dict)
+
+
+class DialogueExportRequest(BaseModel):
+    """Export one finished dialogue job as an episode package with role stems."""
+
+    job_id: str
+
+
+class ProvenanceVerifyRequest(BaseModel):
+    """Verify a signed provenance sidecar against its audio file.
+
+    Exactly one of ``path`` (confined to the repository) or ``download_id``
+    should identify the audio file.
+    """
+
+    path: str | None = None
+    download_id: str | None = None
+
+
+class ApiKeyCreateRequest(BaseModel):
+    """Create one tenant API key; the token is returned exactly once."""
+
+    tenant: str = Field(min_length=1)
+    label: str = ""
+    daily_request_quota: int = Field(default=2000, ge=0)
+    rpm_limit: int = Field(default=30, ge=0)

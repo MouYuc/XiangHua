@@ -49,6 +49,41 @@ class SynthesisJobManager:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._jobs: dict[str, _SynthesisJob] = {}
+        self._store: Any = None  # 可选 JobStore：启用后快照落盘，重启可恢复
+
+    def enable_persistence(self, store: Any, restore_limit: int = 30) -> None:
+        """Persist snapshots to ``store`` and re-adopt recent ones at startup.
+
+        Restored jobs that were mid-flight when the process died are marked
+        failed — their worker threads are gone, so pretending they still run
+        would hang the UI forever.
+        """
+        self._store = store
+        try:
+            for snapshot in store.load_recent(limit=restore_limit) or []:
+                job_id = snapshot.get("job_id")
+                if not isinstance(job_id, str) or not job_id or job_id in self._jobs:
+                    continue
+                if snapshot.get("status") not in TERMINAL_STATUSES:
+                    snapshot = dict(snapshot)
+                    snapshot["status"] = "failed"
+                    snapshot["error"] = "服务重启，任务中断。"
+                    snapshot["message"] = "服务重启，任务中断。"
+                    snapshot["ended_at"] = _now()
+                job = _SynthesisJob(job_id=job_id, snapshot=snapshot, revision=int(snapshot.get("revision") or 0))
+                job.done.set()
+                self._jobs[job_id] = job
+        except Exception:
+            # 恢复失败只影响历史可见性，绝不能让服务起不来。
+            pass
+
+    def _persist(self, snapshot: dict[str, Any] | None) -> None:
+        if self._store is None or not snapshot:
+            return
+        try:
+            self._store.save(snapshot)
+        except Exception:
+            pass  # 落盘失败不影响任务本身
 
     def start(self, cfg: dict[str, Any], text: str, output_dir: Any | None = None) -> dict[str, Any]:
         lines = core.parse_lines(text)
@@ -76,6 +111,7 @@ class SynthesisJobManager:
         )
         with self._lock:
             self._jobs[job_id] = job
+        self._persist(job.snapshot)
 
         def _progress(payload: dict[str, Any]) -> None:
             self.update(job_id, payload)
@@ -133,6 +169,17 @@ class SynthesisJobManager:
         with job.lock:
             return _snapshot(job.snapshot)
 
+    def active_count(self) -> int:
+        """How many jobs are still queued or running (finished jobs don't count)."""
+        with self._lock:
+            jobs = list(self._jobs.values())
+        count = 0
+        for job in jobs:
+            with job.lock:
+                if job.snapshot.get("status") not in TERMINAL_STATUSES:
+                    count += 1
+        return count
+
     def list_snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
         """Return recent job snapshots, newest first, as deep copies.
 
@@ -167,6 +214,7 @@ class SynthesisJobManager:
             if snapshot.get("status") in TERMINAL_STATUSES:
                 job.done.set()
             subscribers = list(job.subscribers)
+        self._persist(snapshot)
         self._publish_to_subscribers(subscribers, {"type": "snapshot", "snapshot": snapshot, "revision": job.revision})
         return snapshot
 

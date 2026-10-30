@@ -47,7 +47,7 @@ ORB_COLOR_DEFAULTS = {
     "orb_playback_token_color": "#F8FBFF",
 }
 TRAINING_AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
-DOWNLOADABLE_SUFFIXES = TRAINING_AUDIO_SUFFIXES | {".zip"}
+DOWNLOADABLE_SUFFIXES = TRAINING_AUDIO_SUFFIXES | {".zip", ".srt"}
 _DOWNLOADS_LOCK = threading.RLock()
 _CONFIG_LOCK = threading.RLock()
 LANGUAGE_TAG_PATTERN = re.compile(r"<(/?)(zh|yue|en|ja|ko)>", re.IGNORECASE)
@@ -401,12 +401,21 @@ def render_with_plan(text: str, cfg: dict[str, Any]) -> PronunciationPlan:
     This is the single construction point shared by text rendering and the output
     manifest. ``configured_accent_level`` keeps the legacy ``auto_lightmid`` toggle
     mapped to ``medium``, so old requests render exactly as they did before the
-    plan itself was persisted.
+    plan itself was persisted. The user lexicon (``user_lexicon.active_overrides``)
+    is consulted here so every Chinese line picks up dictionary corrections; a
+    lookup failure must never break synthesis, so it degrades to no overrides.
     """
+    try:
+        from backend.services import user_lexicon
+
+        overrides = user_lexicon.active_overrides()
+    except Exception:
+        overrides = {}
     return build_pronunciation_plan(
         text,
         language=str(cfg.get("text_lang", "zh")),
         accent_level=configured_accent_level(cfg),
+        user_overrides=overrides,
     )
 
 
@@ -815,6 +824,24 @@ def save_reference_audio(filename: str, stream: Any) -> Path:
         raise
 
 
+def _patch_targets(patch_text: str) -> list[str]:
+    """Collect every filesystem path a unified diff intends to touch."""
+    targets: list[str] = []
+    for line in patch_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("diff --git "):
+            parts = stripped.split(" b/")
+            if len(parts) == 2:
+                targets.append(parts[1].strip().strip('"'))
+        elif stripped.startswith("+++ b/"):
+            targets.append(stripped[len("+++ b/"):].strip().strip('"'))
+        elif stripped.startswith("--- a/"):
+            targets.append(stripped[len("--- a/"):].strip().strip('"'))
+        elif stripped.startswith(("rename to ", "copy to ")):
+            targets.append(stripped.split(" to ", 1)[1].strip().strip('"'))
+    return targets
+
+
 def apply_pronunciation_patch(root: str | Path, filename: str, stream: Any) -> str:
     """Check and apply a user-provided Guangpu pronunciation patch to an engine."""
     if Path(filename or "").suffix.lower() not in {".patch", ".diff"}:
@@ -835,6 +862,16 @@ def apply_pronunciation_patch(root: str | Path, filename: str, stream: Any) -> s
     targets_pronunciation = "GPT_SoVITS/text/chinese.py" in patch_text or "GPT_SoVITS/text/chinese2.py" in patch_text
     if not targets_pronunciation or "GP_PINYIN" not in patch_text:
         raise ValueError("这不是有效的发音补丁：目标文件或 GP_PINYIN 内容不匹配。")
+
+    # 补丁是 `git apply` 的输入，能改写引擎仓库里的任何文件。发音补丁的
+    # 合法作用域只有发音层源码，越界目标一律拒绝，防止借补丁入口改写
+    # 会被 import 执行的代码。
+    for target in _patch_targets(patch_text):
+        normalized = target.replace("\\", "/").lstrip("/")
+        if not normalized.startswith("GPT_SoVITS/text/") or ".." in normalized:
+            raise ValueError(
+                f"发音补丁只能修改 GPT_SoVITS/text/ 下的文件，检测到越界目标：{target}"
+            )
 
     engine_root = Path(root).expanduser().resolve()
     temporary: Path | None = None
@@ -1143,6 +1180,25 @@ def new_output_dir() -> Path:
     return OUTPUT_DIR / f"{timestamp}_{uuid.uuid4().hex[:8]}"
 
 
+def _write_output_provenance_quietly(path: Path, cfg: dict[str, Any], text: str) -> str:
+    """Best-effort signed provenance sidecar; empty string means "not written".
+
+    Provenance is an audit asset, never a synthesis dependency: any failure
+    (missing key dir, locked file, broken card lookup) is swallowed here.
+    ``XIANGHUA_PROVENANCE=0`` disables the sidecar entirely (tests do this to
+    keep the real config dir untouched).
+    """
+    if os.environ.get("XIANGHUA_PROVENANCE", "1") == "0":
+        return ""
+    try:
+        from backend.services import provenance
+
+        sidecar = provenance.write_provenance(path, text, cfg)
+        return str(sidecar)
+    except Exception:
+        return ""
+
+
 def _emit_progress(progress_cb: Any | None, payload: dict[str, Any]) -> None:
     if callable(progress_cb):
         progress_cb(dict(payload))
@@ -1435,6 +1491,7 @@ def _synthesize_lines_locked(
                 "takes": len(candidates),
                 "selected_take": selected_take,
                 "take_cers": take_cers,
+                "provenance": _write_output_provenance_quietly(path, cfg, rendered or line),
                 "warning": (
                     f"生成音频只有 {produced_seconds:.2f}s，远短于这段文本应有的 "
                     f"{expected_seconds:.2f}s，很可能没有真正合成出来。"

@@ -187,3 +187,77 @@ export const cancelJob = (jobId: string) =>
 export const fetchHistory = () => api.get<HistoryEntry[]>('/api/history')
 
 export const clearHistory = () => api.delete<void>('/api/history')
+
+// —— 用户发音词典（多音字 / 专名读法修正） ——
+
+export type LexiconEntry = {
+  term: string
+  replacement: string
+  note: string
+  enabled: boolean
+  updated_at: string
+}
+
+export const listLexicon = () => api.get<{ entries: LexiconEntry[] }>('/api/lexicon')
+
+export const upsertLexicon = (body: { term: string; replacement: string; note?: string; enabled?: boolean }) =>
+  api.post<{ message: string; entry: LexiconEntry }>('/api/lexicon', body)
+
+export const deleteLexicon = (term: string) =>
+  request<void>(`/api/lexicon?term=${encodeURIComponent(term)}`, { method: 'DELETE' })
+
+// —— 整集交付导出（SRT + 整集音轨 + 角色分轨） ——
+
+export type EpisodeExportResult = {
+  message: string
+  srt_url: string
+  full_url: string
+  stem_urls: Record<string, string>
+  line_count: number
+  failed: number
+}
+
+export const exportBatch = (jobId: string) =>
+  api.post<EpisodeExportResult>('/api/batch/export', { job_id: jobId })
+
+// —— 多角色对话编排 ——
+
+export type DialogueOutput = {
+  speaker: string
+  line: string
+  url?: string
+  error?: string
+  duration?: number
+  voice_card_id?: string
+}
+
+export type DialogueSnapshot = {
+  job_id: string
+  status: string
+  current: number
+  total: number
+  completed: number
+  outputs: DialogueOutput[]
+  message?: string
+  error?: string
+}
+
+export const startDialogue = (script: string, roles: Record<string, string>) =>
+  api.post<DialogueSnapshot>('/api/dialogue/synthesis', { script, roles })
+
+export const dialogueStatus = (jobId: string) =>
+  api.get<DialogueSnapshot>(`/api/dialogue/status/${encodeURIComponent(jobId)}`)
+
+export const exportDialogue = (jobId: string) =>
+  api.post<EpisodeExportResult>('/api/dialogue/export', { job_id: jobId })
+
+// —— 溯源凭据校验 ——
+
+export type ProvenanceResult = {
+  valid: boolean
+  reason: string
+  manifest: Record<string, unknown> | null
+}
+
+export const verifyProvenance = (body: { path?: string; download_id?: string }) =>
+  api.post<ProvenanceResult>('/api/provenance/verify', body)

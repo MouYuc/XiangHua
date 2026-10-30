@@ -14,6 +14,17 @@ const POLL_FAILURE_LIMIT = 5
 const configStore = useConfig()
 const toast = useToast()
 
+// 保存的配置里带着后端写入的声线卡/风格字段（激活卡时会落盘）。它们是
+// "上次显式选择"的记录，不是本次请求的显式选择：原样回传会在卡片被删除后
+// 让每次合成都 400。只有用户真正按卡/按风格发起合成时才显式传这两个字段。
+const SERVER_MANAGED_CONFIG_KEYS = ['voice_card_id', 'voice_card_version', 'style_id'] as const
+
+function synthesisRequestBody(text: string): Record<string, unknown> {
+  const body: Record<string, unknown> = { ...configStore.config, text }
+  for (const key of SERVER_MANAGED_CONFIG_KEYS) delete body[key]
+  return body
+}
+
 const busy = ref(false)
 const outputs = ref<SynthesisOutput[]>([])
 const job = ref<SynthesisSnapshot | null>(null)
@@ -177,7 +188,7 @@ async function start(text: string) {
   retryingIndex.value = null
   stopTracking()
   try {
-    const data = await api.post<SynthesisSnapshot>('/api/synthesis', { ...configStore.config, text })
+    const data = await api.post<SynthesisSnapshot>('/api/synthesis', synthesisRequestBody(text))
     applySnapshot(data)
     if (data.job_id && data.status !== 'done' && data.status !== 'failed') {
       startTracking(data.job_id)
@@ -197,7 +208,7 @@ async function retry(index: number) {
   latestRevision = -1
   stopTracking()
   try {
-    const data = await api.post<SynthesisSnapshot>('/api/synthesis', { ...configStore.config, text: item.text })
+    const data = await api.post<SynthesisSnapshot>('/api/synthesis', synthesisRequestBody(item.text))
     applySnapshot(data)
     if (data.job_id && data.status !== 'done' && data.status !== 'failed') {
       startTracking(data.job_id)

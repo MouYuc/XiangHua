@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import json
 
@@ -18,14 +18,20 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.schemas import (
+    ApiKeyCreateRequest,
+    BatchExportRequest,
     ConfigUpdate,
+    DialogueExportRequest,
+    DialogueSynthesisRequest,
     DoctorRequest,
     EnvironmentSelectRequest,
     FeatureRequest,
+    LexiconUpsertRequest,
     MediaAnalyzeRequest,
     MediaExportRequest,
     MediaSelectSpeakerRequest,
     ModelRunRequest,
+    ProvenanceVerifyRequest,
     ReferenceAudioRequest,
     StopRequest,
     SynthesisRequest,
@@ -38,17 +44,24 @@ from backend.schemas import (
     VoiceCardVersionCreate,
 )
 from backend.services import (
+    batch_production,
     core,
+    dialogue,
     media_ingest,
+    provenance,
     reference_audio,
     reference_prompt,
     timbre,
+    user_lexicon,
     voice_assets,
     voice_ingest,
 )
 from backend.services.doctor import run_doctor
 from backend.services.gpu_arbiter import GPU_ARBITER, GpuBusyTimeout
 from backend.services.job_registry import JOB_REGISTRY
+from backend.services.job_store import JobStore
+from backend.services.path_guard import PathConfinementError, confined_directory, confined_file
+from backend.services.request_guard import RequestGuardMiddleware, api_key_registry
 from backend.services.synthesis_jobs import SYNTHESIS_JOBS
 from backend.services.timbre import TIMBRE_BACKEND
 from backend.services.voice_assets import VoiceCardStore
@@ -115,6 +128,71 @@ def _root_or_400(config: dict[str, Any]) -> Path:
 
 def _job_message(step: str, message: str) -> dict[str, Any]:
     return {"message": message, "step": step_status(step), "log": _current_log()}
+
+
+def _record_api_key_chars(http_request: Request, text: str) -> None:
+    """Meter synthesised characters against the calling tenant's API key."""
+    registry = api_key_registry()
+    if registry is None:
+        return
+    try:
+        token = http_request.headers.get("x-api-key") or ""
+        if not token:
+            auth = http_request.headers.get("authorization") or ""
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+        record = registry.authenticate(token) if token else None
+        if record:
+            registry.record_chars(str(record.get("key_id") or ""), len(text or ""))
+    except Exception:
+        pass  # 计量失败绝不影响合成
+
+
+def _registered_url(path_value: str | Path) -> str:
+    """Download URL for an export artifact, or "" when it cannot be registered."""
+    try:
+        candidate = Path(str(path_value or ""))
+        return _as_url(core.register_download(candidate)) if candidate.is_file() else ""
+    except Exception:
+        return ""
+
+
+def exported_output_dir(snapshot: dict[str, Any], outputs: list[dict[str, Any]]) -> Path:
+    """Directory an episode export belongs in: the job's folder, else the first file's.
+
+    ``Path("")`` is ``.`` and therefore truthy, so the old
+    ``Path(...) or fallback`` never actually fell back — dialogue jobs (which
+    used to store an empty ``output_dir``) wrote ``episode.srt`` into whatever
+    directory the server process was started from.
+    """
+    raw = str(snapshot.get("output_dir") or "").strip()
+    if raw:
+        return Path(raw)
+    first = next((item.get("file") for item in outputs if item.get("file")), "")
+    return Path(str(first)).parent if first else Path.cwd()
+
+
+def _public_export_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Attach download URLs to an episode export without exposing raw paths."""
+    data = dict(result)
+    data["srt_url"] = _registered_url(data.get("srt") or "")
+    data["full_url"] = _registered_url(data.get("full") or "")
+    stems = data.get("stems") or {}
+    data["stems"] = {speaker: path for speaker, path in stems.items()}
+    data["stem_urls"] = {speaker: _registered_url(path) for speaker, path in stems.items()}
+    return data
+
+
+def _public_dialogue_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    data = dict(snapshot or {})
+    outputs: list[dict[str, Any]] = []
+    for item in data.get("outputs") or []:
+        row = dict(item)
+        row.pop("file", None)
+        row["url"] = _registered_url(str(item.get("file") or ""))
+        outputs.append(row)
+    data["outputs"] = outputs
+    return data
 
 
 def _public_synthesis_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
@@ -249,6 +327,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # 注册在 CORS 之后 = 位于最外层：Host/Origin 校验、/v1 API Key 与合成
+    # 队列上限在任何路由处理之前拒绝请求。仅作用于 /api 与 /v1 前缀。
+    app.add_middleware(RequestGuardMiddleware)
 
     # Every product route lives on this router and is mounted twice: ``/api`` for
     # the bundled WebUI, ``/v1`` as the public contract. One handler, two prefixes,
@@ -257,6 +338,11 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def start_synthesis_warmup() -> None:
+        # 任务快照落盘：重启后历史任务仍可见（运行中的标记为中断）。
+        try:
+            SYNTHESIS_JOBS.enable_persistence(JobStore(core.CONFIG_DIR))
+        except Exception:
+            pass
         core.SYNTHESIS_BACKEND.start_warmup(core.load_config())
 
     @router.get("/health")
@@ -346,6 +432,15 @@ def create_app() -> FastAPI:
         selected = Path(request.path).expanduser()
         if not (selected / "GPT_SoVITS").is_dir():
             raise HTTPException(status_code=400, detail="选择的 GPT-SoVITS 环境不存在或不完整。")
+        # 只允许切换到本机扫描发现的候选环境（或当前已配置的环境），
+        # 防止把引擎根目录指到任意目录并借此影响后续的导入与执行。
+        known = {os.path.normcase(item["path"]) for item in scan_gpt_sovits_roots(core.REPO_ROOT)}
+        known.add(os.path.normcase(str(config.get("gpt_sovits_root") or "")))
+        if os.path.normcase(str(selected)) not in known:
+            raise HTTPException(
+                status_code=403,
+                detail="只能选择环境扫描发现的 GPT-SoVITS 目录。",
+            )
         config.update(derive_environment_config(str(selected), config))
         config = core.save_config(config)
         return {"config": config, "rows": core.environment_check(config), "selected": str(selected)}
@@ -552,6 +647,174 @@ def create_app() -> FastAPI:
         }
 
 
+    # ------------------------------------------------------ 用户发音词典 ----
+    # 多音字/专名读音修正：最高优先级的发音替换规则，见 services/user_lexicon.py。
+
+    @router.get("/lexicon")
+    def list_lexicon() -> dict[str, Any]:
+        return {"entries": user_lexicon.list_entries()}
+
+    @router.post("/lexicon")
+    def upsert_lexicon(request: LexiconUpsertRequest) -> dict[str, Any]:
+        try:
+            row = user_lexicon.upsert_entry(
+                request.term, request.replacement, note=request.note, enabled=request.enabled
+            )
+        except user_lexicon.LexiconError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "message": f"已保存词条「{row['term']} → {row['replacement']}」，下次生成即生效。",
+            "entry": row,
+        }
+
+    @router.delete("/lexicon", status_code=204)
+    def delete_lexicon(term: str = Query(...)) -> Response:
+        if not user_lexicon.delete_entry(term):
+            raise HTTPException(status_code=404, detail="词条不存在。")
+        return Response(status_code=204)
+
+    # ------------------------------------------------------ 整集交付导出 ----
+    # 把一次合成/对话任务的逐句输出导出为 episode.srt + 整集音轨 + 角色分轨。
+
+    @router.post("/batch/export")
+    def export_batch(request: BatchExportRequest) -> dict[str, Any]:
+        snapshot = SYNTHESIS_JOBS.snapshot(request.job_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="合成任务不存在。")
+        if snapshot.get("status") != "done":
+            raise HTTPException(status_code=409, detail="任务还没完成，暂时不能导出整集。")
+        outputs = snapshot.get("outputs") or []
+        if not any(item.get("file") for item in outputs):
+            raise HTTPException(status_code=400, detail="该任务没有成功输出的台词，无法导出。")
+        output_dir = exported_output_dir(snapshot, outputs)
+        try:
+            result = batch_production.export_episode(outputs, output_dir)
+        except batch_production.BatchExportError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "message": f"已导出 {result['line_count']} 句（{result['failed']} 句缺失被跳过）。",
+            **_public_export_result(result),
+        }
+
+    # ------------------------------------------------------ 多角色对话编排 ----
+
+    @router.post("/dialogue/synthesis")
+    def start_dialogue(request: DialogueSynthesisRequest) -> dict[str, Any]:
+        if not request.script.strip():
+            raise HTTPException(status_code=400, detail="对话脚本为空，请先输入内容。")
+        known = {card["voice_id"] for card in VOICE_CARDS.list_cards()}
+        unknown = [vid for vid in request.roles.values() if vid not in known]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"角色绑定的声线卡不存在：{'、'.join(unknown)}。",
+            )
+        try:
+            snapshot = dialogue.DIALOGUE_JOBS.start(
+                request.script, request.roles, core.load_config()
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _public_dialogue_snapshot(snapshot)
+
+    @router.get("/dialogue/status/{job_id}")
+    def dialogue_status(job_id: str) -> dict[str, Any]:
+        snapshot = dialogue.DIALOGUE_JOBS.snapshot(job_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="对话任务不存在。")
+        return _public_dialogue_snapshot(snapshot)
+
+    @router.post("/dialogue/export")
+    def export_dialogue(request: DialogueExportRequest) -> dict[str, Any]:
+        snapshot = dialogue.DIALOGUE_JOBS.snapshot(request.job_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="对话任务不存在。")
+        if snapshot.get("status") != "done":
+            raise HTTPException(status_code=409, detail="对话还没合成完，暂时不能导出。")
+        outputs = snapshot.get("outputs") or []
+        if not any(item.get("file") for item in outputs):
+            raise HTTPException(status_code=400, detail="该对话没有成功输出的台词，无法导出。")
+        speakers = {
+            index: str(item.get("speaker") or "")
+            for index, item in enumerate(outputs)
+            if item.get("speaker")
+        }
+        output_dir = exported_output_dir(snapshot, outputs)
+        try:
+            result = batch_production.export_episode(outputs, output_dir, speakers=speakers)
+        except batch_production.BatchExportError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "message": f"已导出 {result['line_count']} 句（{result['failed']} 句失败被跳过），含角色分轨。",
+            **_public_export_result(result),
+        }
+
+    # ------------------------------------------------------ 溯源凭据校验 ----
+
+    @router.post("/provenance/verify")
+    def verify_provenance_route(request: ProvenanceVerifyRequest) -> dict[str, Any]:
+        source: Path | None = None
+        if request.download_id:
+            source = core.resolve_download(request.download_id)
+        if source is None and request.path:
+            try:
+                source = confined_file(request.path)
+            except PathConfinementError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if source is None or not source.is_file():
+            raise HTTPException(status_code=404, detail="找不到要校验的音频文件。")
+        return provenance.verify_provenance(source)
+
+    # ------------------------------------------------------ 租户 API Key ----
+    # 管理 XIANGHUA_API_KEYS_FILE 指向的多租户密钥注册表；token 只在创建时返回一次。
+
+    @router.get("/api-keys")
+    def list_api_keys() -> dict[str, Any]:
+        registry = api_key_registry()
+        if registry is None:
+            raise HTTPException(
+                status_code=409,
+                detail="未配置多租户密钥：请设置环境变量 XIANGHUA_API_KEYS_FILE 后重启服务。",
+            )
+        return {"keys": registry.list_keys()}
+
+    @router.post("/api-keys")
+    def create_api_key(request: ApiKeyCreateRequest) -> dict[str, Any]:
+        registry = api_key_registry()
+        if registry is None:
+            raise HTTPException(
+                status_code=409,
+                detail="未配置多租户密钥：请设置环境变量 XIANGHUA_API_KEYS_FILE 后重启服务。",
+            )
+        try:
+            record = registry.create_key(
+                request.tenant,
+                label=request.label,
+                daily_request_quota=request.daily_request_quota,
+                rpm_limit=request.rpm_limit,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "message": (
+                f"已为租户「{record['tenant']}」创建 API Key。"
+                "令牌只显示这一次，请立即保存。"
+            ),
+            "key": record,
+        }
+
+    @router.delete("/api-keys/{key_id}", status_code=204)
+    def revoke_api_key(key_id: str) -> Response:
+        registry = api_key_registry()
+        if registry is None:
+            raise HTTPException(
+                status_code=409,
+                detail="未配置多租户密钥：请设置环境变量 XIANGHUA_API_KEYS_FILE 后重启服务。",
+            )
+        if not registry.revoke_key(key_id):
+            raise HTTPException(status_code=404, detail="API Key 不存在。")
+        return Response(status_code=204)
+
     @router.get("/reference-audio/prompt")
     def reference_audio_prompt(
         path: str = Query(..., description="参考音频路径"),
@@ -568,13 +831,13 @@ def create_app() -> FastAPI:
         """Grade a clip that is already on disk, or a whole corpus directory."""
         try:
             if request.directory:
-                paths = reference_audio.collect_audio(Path(request.directory))
+                paths = reference_audio.collect_audio(confined_directory(request.directory))
                 if not paths:
                     raise HTTPException(status_code=404, detail="该目录里没有音频文件。")
                 return {"kind": "corpus", "report": reference_audio.analyze_corpus(paths, request.purpose)}
             if not request.path:
                 raise HTTPException(status_code=400, detail="请提供 path 或 directory。")
-            candidate = Path(request.path).expanduser()
+            candidate = confined_file(request.path)
             if not candidate.is_file():
                 raise HTTPException(status_code=404, detail="找不到要检查的音频。")
             return {
@@ -588,6 +851,8 @@ def create_app() -> FastAPI:
             }
         except HTTPException:
             raise
+        except PathConfinementError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -595,6 +860,14 @@ def create_app() -> FastAPI:
 
     @router.post("/engine/pronunciation-patch")
     def import_pronunciation_patch(patch: UploadFile = File(...)) -> dict[str, str]:
+        if os.environ.get("XIANGHUA_ALLOW_PRONUNCIATION_PATCH") != "1":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "发音补丁导入未开启。此接口会改动引擎仓库文件，"
+                    "如确需使用，请设置环境变量 XIANGHUA_ALLOW_PRONUNCIATION_PATCH=1 后重启服务。"
+                ),
+            )
         root = core.load_config()["gpt_sovits_root"]
         if not (Path(root) / "GPT_SoVITS").is_dir():
             raise HTTPException(status_code=400, detail="GPT-SoVITS 根目录不可用。")
@@ -607,7 +880,7 @@ def create_app() -> FastAPI:
         return {"message": message}
 
     @router.post("/synthesis")
-    def synthesis(request: SynthesisRequest) -> dict[str, Any]:
+    def synthesis(request: SynthesisRequest, http_request: Request) -> dict[str, Any]:
         readiness = core.SYNTHESIS_BACKEND.warmup_status()
         if readiness["status"] in {"warming", "failed"}:
             raise HTTPException(status_code=409, detail=readiness["message"])
@@ -647,6 +920,7 @@ def create_app() -> FastAPI:
                     status_code=400,
                     detail=f"参考音频与参考文本不匹配：{pair['message']} 清单原文：{pair['expected_text']}",
                 )
+            _record_api_key_chars(http_request, request.text)
             return _public_synthesis_snapshot(
                 SYNTHESIS_JOBS.start(prepared.config, prepared.text)
             )
@@ -728,7 +1002,10 @@ def create_app() -> FastAPI:
         if request.download_id:
             source = core.resolve_download(request.download_id)
         if source is None and request.source_path:
-            candidate = Path(request.source_path).expanduser()
+            try:
+                candidate = confined_file(request.source_path)
+            except PathConfinementError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
             source = candidate if candidate.is_file() else None
         if source is None or not source.is_file():
             raise HTTPException(status_code=404, detail="找不到要转换的源音频。")
@@ -1115,8 +1392,11 @@ def create_app() -> FastAPI:
                 # An unknown API path must be a JSON 404, never the SPA shell:
                 # a client that mistypes a URL should not receive index.html.
                 raise HTTPException(status_code=404, detail="接口不存在。")
-            candidate = frontend_dist / frontend_path
-            if frontend_path and candidate.is_file():
+            # 路径必须解析后仍落在 dist 内：百分号编码的 ../ 或绝对盘符
+            # （例如 /%2e%2e/%2e%2e/backend/app.py）不允许读到 dist 外的文件。
+            dist_root = frontend_dist.resolve()
+            candidate = (frontend_dist / frontend_path).resolve()
+            if frontend_path and candidate.is_relative_to(dist_root) and candidate.is_file():
                 return FileResponse(candidate)
             return FileResponse(frontend_dist / "index.html")
 

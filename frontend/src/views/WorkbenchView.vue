@@ -4,8 +4,10 @@ import { useConfig, ACCENT_OPTIONS, LANGUAGE_OPTIONS } from '@/composables/useCo
 import { usePage } from '@/composables/usePage'
 import { useReferenceAudio } from '@/composables/useReferenceAudio'
 import { useSynthesis } from '@/composables/useSynthesis'
+import { useToast } from '@/composables/useToast'
 import { useVoices } from '@/composables/useVoices'
 import { createDraftsStore } from '@/composables/drafts'
+import { exportBatch, type EpisodeExportResult } from '@/lib/api'
 import AudioPlayer from '@/components/AudioPlayer.vue'
 import WaveForm from '@/components/WaveForm.vue'
 
@@ -85,8 +87,28 @@ async function generate() {
   if (synthesis.busy.value) return
   if (!scriptText.value.trim()) return
   drafts.value = draftsStore.add(scriptText.value)
+  exportResult.value = null
   synthesis.clearResults()
   await synthesis.start(scriptText.value)
+}
+
+// —— 整集导出：SRT 字幕 + 拼接音轨，交付短剧剪辑 ——
+const toast = useToast()
+const exporting = ref(false)
+const exportResult = ref<EpisodeExportResult | null>(null)
+
+async function exportEpisode() {
+  const jobId = synthesis.job.value?.job_id
+  if (!jobId || exporting.value) return
+  exporting.value = true
+  try {
+    exportResult.value = await exportBatch(jobId)
+    toast.success(exportResult.value.message)
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    exporting.value = false
+  }
 }
 
 async function retryLine(lineIndex: number) {
@@ -118,6 +140,7 @@ function loadSample() {
 
 function clearScript() {
   synthesis.clearResults()
+  exportResult.value = null
   lines.value = ['']
 }
 
@@ -323,7 +346,22 @@ const estimatedSeconds = computed(() => Math.max(5, Math.round(charCount.value *
           <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> 全部生成</span>
         </span>
         <span style="flex:1"></span>
-        <span class="foot-meta"><span class="mono">预计 ~{{ estimatedSeconds }}s</span></span>
+        <span class="foot-meta">
+          <button
+            v-if="synthesis.job.value?.status === 'done' && !synthesis.busy.value"
+            class="mini"
+            style="height:22px"
+            type="button"
+            :disabled="exporting"
+            title="导出 episode.srt 字幕与整集音轨"
+            @click="exportEpisode"
+          >{{ exporting ? '导出中…' : '导出整集' }}</button>
+          <template v-if="exportResult">
+            <a class="mini" style="height:22px" :href="exportResult.srt_url" download>SRT</a>
+            <a v-if="exportResult.full_url" class="mini" style="height:22px" :href="exportResult.full_url" download>音轨</a>
+          </template>
+          <span class="mono">预计 ~{{ estimatedSeconds }}s</span>
+        </span>
       </div>
     </div>
 

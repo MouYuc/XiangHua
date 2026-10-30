@@ -58,6 +58,19 @@ SUPPORTED_MEDIA_SUFFIXES = {
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 _PROGRESS = Callable[[float, str], None]
 
+DEFAULT_MAX_MEDIA_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB：够长视频，又不至于灌满磁盘
+
+
+def max_media_bytes() -> int:
+    """Upload cap for one media file; ``XIANGHUA_MAX_MEDIA_BYTES`` overrides it."""
+    raw = os.environ.get("XIANGHUA_MAX_MEDIA_BYTES")
+    if not raw:
+        return DEFAULT_MAX_MEDIA_BYTES
+    try:
+        return max(1024 * 1024, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_MEDIA_BYTES
+
 # ``_media_service()`` in app.py builds a fresh MediaIngestService for every
 # request, so the per-instance lock alone cannot stop two concurrent analyze
 # requests from both starting a worker (and loading ERes2NetV2 twice). This
@@ -513,8 +526,21 @@ class MediaIngestService:
         directory = self.session_dir(session_id)
         source_path = directory / "source" / safe_name
         source_path.parent.mkdir(parents=True, exist_ok=True)
-        with source_path.open("wb") as output:
-            shutil.copyfileobj(stream, output, length=1024 * 1024)
+        # 有上限的流式落盘：媒体上传没有参考音的 100MB 规则，但也不能无限。
+        limit = max_media_bytes()
+        written = 0
+        try:
+            with source_path.open("wb") as output:
+                while chunk := stream.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > limit:
+                        raise MediaIngestError(
+                            f"上传的媒体不能超过 {limit // (1024 * 1024)} MB。"
+                        )
+                    output.write(chunk)
+        except BaseException:
+            source_path.unlink(missing_ok=True)
+            raise
         if source_path.stat().st_size == 0:
             source_path.unlink(missing_ok=True)
             raise MediaIngestError("上传的文件为空。")
