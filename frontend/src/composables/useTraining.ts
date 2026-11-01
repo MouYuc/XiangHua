@@ -1,5 +1,17 @@
 import { computed, reactive, ref } from 'vue'
-import { api, type JobResult } from '@/lib/api'
+import {
+  api,
+  errorMessage,
+  type CheckpointRow,
+  type EnvironmentRow,
+  type JobResult,
+  type TrainingJobRow,
+  type TrainingMetricRow,
+  type TrainingState,
+  type TrainingStatusResponse,
+  type TranscriptRow,
+} from '@/lib/api'
+import { createPolling } from './usePolling'
 import { useToast } from './useToast'
 
 export const TRAINING_STEP_LABELS: Record<string, string> = {
@@ -19,13 +31,13 @@ const STATUS_LABELS: Record<string, string> = {
 
 const toast = useToast()
 
-const training = ref<any>({ steps: {} })
-const stats = ref<any>({})
-const running = ref<any[]>([])
+const training = ref<TrainingState>({ steps: {} })
+const stats = ref<Record<string, number | string | null>>({})
+const running = ref<TrainingJobRow[]>([])
 const logText = ref('（还没有任务，日志会显示在这里）')
-const metrics = ref<any[]>([])
-const checkpoints = ref<any[]>([])
-const environment = ref<{ name: string; status: string; detail: string; fix: string }[]>([])
+const metrics = ref<TrainingMetricRow[]>([])
+const checkpoints = ref<CheckpointRow[]>([])
+const environment = ref<EnvironmentRow[]>([])
 const actionBusy = ref(false)
 const refreshing = ref(false)
 const loaded = ref(false)
@@ -34,7 +46,7 @@ const recording = ref<File | null>(null)
 const sliceDefaults = { silence_threshold: -35, min_length: 4000, min_gap: 300, keep_silence: 500 }
 const slice = reactive({ ...sliceDefaults })
 const whisperModel = ref('large-v3')
-const transcript = ref<{ path: string; text: string; audio_url?: string }[]>([])
+const transcript = ref<TranscriptRow[]>([])
 const experiment = ref('myvoice')
 const epochs = reactive({ s1_epochs: 15, s2_epochs: 12 })
 const activeStep = ref('slice')
@@ -44,7 +56,6 @@ const asrModels = [
   { id: 'small', title: 'small', detail: '先跑通流程', time: '较快' },
 ]
 
-let poller: number | undefined
 let autoPicked = false
 
 const step = (name: string) => training.value.steps?.[name] || { status: 'pending', title: name }
@@ -107,7 +118,7 @@ const latestMetric = computed(() => metricRows.value.at(-1) || {})
 
 const lossSeries = computed(() =>
   metricRows.value
-    .map((row: any) => ({
+    .map((row) => ({
       step: Number(row.step || row.step_idx || 0),
       loss_d: Number(row.loss_d || 0),
       loss_g: Number(row.loss_g || 0),
@@ -120,11 +131,15 @@ const lossPath = computed(() => {
   if (!rows.length) return [] as string[]
   const maxLoss = Math.max(...rows.flatMap((row) => [row.loss_d, row.loss_g]), 0.01)
   const range = Math.max(rows[rows.length - 1].step - rows[0].step, 1)
+  // Coordinates are emitted for the consumer's viewBox of 100 x 40, and each
+  // string already starts with a moveto — the template used to prepend another
+  // "M", which made the path data invalid and left the chart blank.
+  const height = 40
   return ['loss_d', 'loss_g'].map((metric) => {
     return rows
       .map((row, index) => {
         const x = ((row.step - rows[0].step) / range) * 100
-        const y = (1 - (metric === 'loss_d' ? row.loss_d : row.loss_g) / maxLoss) * 100
+        const y = (1 - (metric === 'loss_d' ? row.loss_d : row.loss_g) / maxLoss) * height
         return `${index ? 'L' : 'M'}${x.toFixed(2)} ${y.toFixed(2)}`
       })
       .join(' ')
@@ -152,7 +167,7 @@ async function refresh() {
   if (refreshing.value) return
   refreshing.value = true
   try {
-    const data = await api.get<any>('/api/training/status')
+    const data = await api.get<TrainingStatusResponse>('/api/training/status')
     training.value = data.state || { steps: {} }
     stats.value = data.stats || {}
     running.value = data.running || []
@@ -160,8 +175,11 @@ async function refresh() {
     environment.value = data.environment || []
     if (running.value.length || data.last_job_id) {
       const jobId = running.value[0]?.job_id || data.last_job_id
-      metrics.value = (await api.get<any>(`/api/training/metrics?job_id=${jobId}`)).rows ?? []
-      checkpoints.value = (await api.get<any>('/api/training/checkpoints')).rows ?? []
+      metrics.value = (
+        await api.get<{ rows?: TrainingMetricRow[] }>(`/api/training/metrics?job_id=${jobId}`)
+      ).rows ?? []
+      checkpoints.value =
+        (await api.get<{ rows?: CheckpointRow[] }>('/api/training/checkpoints')).rows ?? []
     } else {
       metrics.value = []
       checkpoints.value = []
@@ -179,15 +197,24 @@ async function refresh() {
   }
 }
 
-async function runAction(path: string, payload: object = {}) {
+/**
+ * Run one training action and report whether it actually succeeded.
+ *
+ * Callers used to `await runAction(...)` and then unconditionally toast success
+ * and navigate away, so a failed "select model" still told the user their new
+ * voice was ready. The boolean return is the whole point of this signature.
+ */
+async function runAction(path: string, payload: object = {}): Promise<boolean> {
   actionBusy.value = true
   try {
     const result = await api.post<JobResult>(path, payload)
     if (result.message) toast.success(result.message)
     if (result.log?.text) logText.value = result.log.text
     await refresh()
+    return true
   } catch (error) {
-    toast.error(error instanceof Error ? error.message : String(error))
+    toast.error(errorMessage(error))
+    return false
   } finally {
     actionBusy.value = false
   }
@@ -216,7 +243,8 @@ async function startSlice() {
 
 async function loadTranscript() {
   try {
-    transcript.value = (await api.get<any>('/api/training/transcript')).rows || []
+    transcript.value =
+      (await api.get<{ rows?: TranscriptRow[] }>('/api/training/transcript')).rows || []
     toast.success(`已加载 ${transcript.value.length} 句。`)
   } catch (error) {
     toast.error(error instanceof Error ? error.message : String(error))
@@ -229,7 +257,7 @@ async function saveTranscript() {
 
 async function selectModels() {
   try {
-    const data = await api.post<any>('/api/training/models/select')
+    const data = await api.post<{ message: string }>('/api/training/models/select')
     toast.success(data.message)
     await refresh()
   } catch (error) {
@@ -257,16 +285,25 @@ function resetSliceDefaults() {
   Object.assign(slice, sliceDefaults)
 }
 
+// One shared loop for the whole training page. `createPolling` (rather than
+// `usePolling`) because this composable is a module singleton, not a component:
+// the timer belongs to the module and is stopped explicitly by the view.
+const poller_ = createPolling({
+  interval: 2500,
+  immediate: false,
+  failLimit: 0, // training status is long-lived; never give up on a blip
+  run: async () => {
+    await refresh()
+    return true
+  },
+})
+
 function startPolling() {
-  stopPolling()
-  poller = window.setInterval(() => void refresh(), 2500)
+  poller_.start()
 }
 
 function stopPolling() {
-  if (poller !== undefined) {
-    window.clearInterval(poller)
-    poller = undefined
-  }
+  poller_.stop()
 }
 
 export function useTraining() {

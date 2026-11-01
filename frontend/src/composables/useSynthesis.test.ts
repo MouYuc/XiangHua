@@ -6,6 +6,17 @@ const toastError = vi.fn()
 const streamClose = vi.fn()
 
 vi.mock('@/lib/api', () => ({
+  // The composable branches on `error instanceof ApiError`, so the mock has to
+  // expose the real shape rather than a bare object.
+  ApiError: class ApiError extends Error {
+    status: number
+    code: string
+    constructor(message: string, status = 0, code = '') {
+      super(message)
+      this.status = status
+      this.code = code
+    }
+  },
   api: { get: vi.fn(), post: vi.fn() },
 }))
 

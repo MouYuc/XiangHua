@@ -1,4 +1,5 @@
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, getCurrentInstance, onScopeDispose, ref } from 'vue'
+import { createPolling } from './usePolling'
 import { cancelJob, fetchJobs, type JobRecord } from '@/lib/api'
 import { useToast } from './useToast'
 
@@ -20,7 +21,6 @@ const errors = ref<string[]>([])
 const open = ref(false)
 const loadFailed = ref(false)
 
-let timer: number | undefined
 let failures = 0
 let initialized = false
 let refCount = 0
@@ -43,18 +43,30 @@ async function refresh() {
   }
 }
 
+// One shared loop for the whole app (the task centre is the only consumer).
+// `open` narrows the cadence, so the interval is a function rather than a value.
+const controller = createPolling({
+  interval: () => (open.value ? POLL_OPEN_MS : POLL_IDLE_MS),
+  immediate: false,
+  // Keeping the list fresh matters more than the traffic: a transient failure
+  // is retried forever and only raises `loadFailed` for the badge.
+  failLimit: 0,
+  run: async () => {
+    // A background tab does not need a 5 s poll; skip the round trip and pick up
+    // again on the next tick once the tab is visible.
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return true
+    await refresh()
+    return true
+  },
+})
+
 function schedule() {
-  if (timer !== undefined) return
-  timer = window.setInterval(() => {
-    void refresh()
-  }, open.value ? POLL_OPEN_MS : POLL_IDLE_MS)
+  if (!controller.active()) controller.start()
 }
 
 function reschedule() {
-  if (timer !== undefined) {
-    window.clearInterval(timer)
-    timer = undefined
-  }
+  // The interval is re-read on the next schedule, so a toggle only needs the
+  // loop running.
   schedule()
 }
 
@@ -81,9 +93,8 @@ function startPolling() {
 
 function stopPolling() {
   refCount = Math.max(0, refCount - 1)
-  if (refCount === 0 && timer !== undefined) {
-    window.clearInterval(timer)
-    timer = undefined
+  if (refCount === 0) {
+    controller.stop()
     initialized = false
   }
 }
@@ -91,11 +102,11 @@ function stopPolling() {
 export function useJobs() {
   if (typeof window !== 'undefined') {
     startPolling()
-    try {
-      onUnmounted(stopPolling)
-    } catch {
-      /* 在非组件环境（单测）调用时没有生命周期，轮询由模块持有 */
-    }
+    // `onScopeDispose` also fires for effect scopes and, unlike `onUnmounted`,
+    // does not warn when there is no component instance — the previous code
+    // threw-and-swallowed, which leaked the reference count so the timer never
+    // stopped.
+    if (getCurrentInstance()) onScopeDispose(stopPolling)
   }
   function setOpen(next: boolean) {
     open.value = next

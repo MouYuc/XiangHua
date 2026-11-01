@@ -5,7 +5,7 @@
 
 ---
 
-## 当前状态（2026-10-17）
+## 当前状态（2026-11-01）
 
 这是一次清场后的新起点：
 
@@ -13,6 +13,9 @@
 - 保留用户原始录音、切片、ASR、最终权重、当前模型和运行环境；
 - 默认合成已切到“清晰优先”：底模 v2Pro + 清晰参考音，默认 `accent_level=off`；
 - 首轮 MVP 已跑通：20 句固定回归、档位化发音层、参考音/文本配对；
+- **工程化基线已建立**（2026-11）：依赖锁定、ruff 静态检查、CI（后端 505 + 前端 50 测试）、
+  结构化日志、JSON 持久化并发安全、磁盘保留策略；后端按 `infra / domain / services / api` 分层，
+  `app.py` 从 1085 行单函数拆为 178 行组合根 —— 详见 [审查与重构记录](docs/REFACTOR_2026-11.md)；
 - 音色入口改为**一段自然说话音频**：系统自动切片、识别、选参考片段，用户不需要照读台词本或补录口音；
 - 验证结果见 [MVP 验证记录](docs/MVP_VALIDATION.md)，新架构与产品路线见：
   - [架构：音色/发音/韵律/口音四分离](docs/ARCHITECTURE.md)
@@ -47,12 +50,13 @@
 & .venv\Scripts\python.exe tools\webui.py
 ```
 
-打开浏览器后：
+打开浏览器后（导航只有三个目的地，设置收在右上角弹窗）：
 
-- 合成：粘贴台词 → 试听/下载；
-- 批量：导入 TXT → 整批合成；
-- 训练：切片、ASR、校对、特征、训练；
-- 历史/设置：本机运行记录与模型路径。
+- **工作台**：逐行编辑台词 → 每行结果直接长在台词下方（生成中/排队/失败/时长偏短/已完成）→ 试听与下载；
+- **声音库**：声线卡列表与「新建声音」向导；「声音工作坊」五步流程（上传素材 → 选说话人 → 校对 → 特征 → 训练）；
+- **记录**：本机合成历史，可校验溯源凭据。
+
+全局任务中心在顶栏，⌘K/⌘J 打开命令面板，Ctrl+Enter 生成。
 
 ### 2. 命令行批量合成
 
@@ -76,11 +80,36 @@ AUTO_LIGHTMID=1   # 旧接口，映射为 medium
 ```text
 GPT:    GPT-SoVITS/GPT_SoVITS/pretrained_models/s1v3.ckpt
 SoVITS: GPT-SoVITS/GPT_SoVITS/pretrained_models/v2Pro/s2Gv2Pro.pth
-参考音: GPT-SoVITS/custom_data/sliced/训练.wav_0000018880_0000143680.wav
-文本:   今天天气真不错，我们出去走走吧。
+参考音/文本：由「新建声音」向导自动建档后写入 .guangpu_webui/config.json
 ```
 
-这是“清晰优先”预设，不代表最终音色模型。
+这是“清晰优先”预设，不代表最终音色模型。**不要**照抄某台机器上的参考音路径：
+它随上传的素材变化，以当前配置为准。
+
+---
+
+## 开发与验证
+
+```powershell
+# 依赖：先装与显卡匹配的 PyTorch，再装本项目依赖
+& .venv\Scripts\python.exe -m pip install -r requirements.txt
+& .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+
+# 后端测试（约 30 秒，不加载模型）
+& .venv\Scripts\python.exe -m pytest backend/tests -q
+
+# 静态检查（CI 同款）
+& .venv\Scripts\python.exe -m ruff check backend tools scripts
+
+# 前端
+cd frontend; npm ci; npm test; npm run build
+```
+
+- `requirements.txt` 是人工维护的直接依赖；`requirements.lock.txt` 是 240 个包的精确快照，
+  用于逐位复现验证过的环境；`requirements-ci.txt` 是 CI 用的最小集（不含 torch）。
+- CI 配置见 `.github/workflows/ci.yml`：ruff + 后端测试 + 前端测试与构建。
+- 运行时日志默认写 stderr，`XIANGHUA_LOG_LEVEL` 调整级别，`XIANGHUA_LOG_JSON=1` 输出 JSON 行。
+- 磁盘清理：`GET /api/maintenance/retention` 只报告，`POST /api/maintenance/prune?apply=true` 才真正删除。
 
 ---
 
@@ -100,7 +129,8 @@ SoVITS: GPT-SoVITS/GPT_SoVITS/pretrained_models/v2Pro/s2Gv2Pro.pth
 
 ## 文档
 
-- [交接文档](docs/HANDOFF.md)
+- [审查与重构记录（2026-11）](docs/REFACTOR_2026-11.md) ← 先看这个
+- [交接文档](docs/HANDOFF.md)（2026-10-17 版，已部分过期，架构以重构记录为准）
 - [核心架构自检](docs/CORE_ARCHITECTURE_AUDIT.md)
 - [/v1 API 契约](docs/API_V1.md)
 - [MVP 验证记录](docs/MVP_VALIDATION.md)
@@ -161,17 +191,28 @@ XIANGHUA_PROVENANCE=0               # 关闭每条输出的签名溯源 sidecar�
 ## 目录结构
 
 ```text
-backend/            FastAPI 后端、合成任务、声音/训练服务
-frontend/           Vue 3 WebUI
-tools/              本地合成、WebUI、训练封装
-scripts/            训练链、数据集准备、验收脚本
-GPT-SoVITS/         GPT-SoVITS v2Pro 引擎与模型
-assets/             口音包清单、Logo（旧台词本仅作可选示例）
-docs/               架构、产品、训练与使用文档
+backend/
+  app.py            组合根（178 行）：中间件、lifespan、异常处理、双前缀挂载、SPA 回退
+  api/              HTTP 层：deps.py（共享单例与响应整形）+ routers/（8 个模块 / 76 条路由）
+  domain/           纯逻辑层：text.py（行解析、语言分段、发音文本、时长估算）
+  infra/            基础设施：atomic（原子写）/ jsonstore（带锁版本化持久化）/ logging / ids
+  services/         业务服务：core、媒体入库、声线卡、发音、GPU 租约、任务注册表、保留策略
+  schemas.py        请求模型
+  tests/            505 项后端测试
+frontend/           Vue 3 WebUI（工作台 / 声音库 / 记录 + 弹窗设置）
+tools/              本地合成、WebUI 启动、训练封装
+scripts/            训练链、数据集准备、验收与回归脚本
+GPT-SoVITS/         GPT-SoVITS v2Pro 引擎与模型（gitignored）
+assets/             口音包与风格包清单、Logo
+docs/               架构、产品、训练与使用文档（先看 REFACTOR_2026-11.md）
 examples/           示例台词
 patches/            发音补丁
 third_party/knn-vc/ 当前音色转换链路
+.github/workflows/  CI（ruff + 后端测试 + 前端测试与构建）
 ```
+
+依赖方向是单向的：`domain` → `services` → `api` → `app`。任何模块都不得自己写 JSON 文件，
+一律走 `infra.jsonstore`，否则会重新引入并发覆盖与半写损坏。
 
 ---
 

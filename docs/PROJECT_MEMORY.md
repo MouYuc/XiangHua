@@ -1,7 +1,7 @@
 # 项目持久记忆
 
-更新时间：2026-10-25
-状态：清晰优先基线已用本人真实声音验证；VoiceCard/StylePack 资产契约已落地
+更新时间：2026-11-01
+状态：架构分层与工程化基建完成（见 0j 与 `docs/REFACTOR_2026-11.md`）；清晰优先基线已用本人真实声音验证
 
 这份文档是后续会话的项目级记忆入口。开始任务前先读 `AGENTS.md` 和本文件；如果知识图谱已被重建，再检查 `.code-review-graph/graph.db`。当前图谱已在清场时删除，后续按需重建。完整交接见 `docs/HANDOFF.md`。
 
@@ -132,6 +132,59 @@
 - **IndexTTS2 评估完成**：`docs/INDEX_TTS2_EVALUATION.md`（Agent 三次死于并发限制，主会话自写）。核心结论：**有条件接入**——技术强契合（情感/时长解耦），但 bilibili 自定义许可证**商用需书面授权**（issue #228），授权前只进实验分支不进产出路径；建议 `emotion/duration_hint` 字段先落 API 契约，备选 Apache-2.0 的 CosyVoice-instruct。
 - **未完成**：对话编排的专用前端 UI（API 已就绪，工作台只挂了整集导出按钮）；情感控制实现本体待授权与实验结论。
 
+## 0j. 2026-11-01 全量审查与架构重构（本轮）
+
+**入口文档**：`docs/REFACTOR_2026-11.md`（缺陷清单、分层说明、验证结果、未做项）。
+
+- 后端缺陷修复 13 项，其中两条会直接丢数据/挂死：任务 ID 毫秒碰撞（同毫秒两个任务互相覆盖）、
+  `save_audio` 内 ffmpeg 无超时且运行在 GPU 租约内（卡住则租约永不释放，之后所有合成报「GPU 占用」）。
+  `history.json` / `config.json` / 媒体会话 JSON 的读改写全部改为带锁 + 原子写 + 损坏隔离。
+- 新增分层：`backend/infra/`（atomic / jsonstore / logging / ids）、`backend/domain/text.py`、
+  `backend/api/{deps.py,routers/*}`。`app.py` 1431 → 178 行，76 条路由进 8 个模块；
+  `core.py` 1620 → 1391 行（纯文本层 528 行外移，`core` 保留同名再导出）。
+- 新增 `config_guard`：`PUT /config` 与合成请求体不能再把 `ref_audio`/`gpt_model`/`gpt_sovits_root`
+  指向任意位置（此前可读任意音频、可 `torch.load`、可把任意目录塞进 `sys.path`）。
+- 工程化：`requirements.txt` + `requirements.lock.txt`(240) + `requirements-ci.txt`、
+  `pyproject.toml`（ruff 固定规则集 + pytest 配置）、`.github/workflows/ci.yml`；
+  全项目从 0 处 logging 变为接入结构化日志；`on_event` 改 `lifespan`（告警 113 → 1）。
+- 磁盘保留：`services/retention.py` + `GET /api/maintenance/retention`（只报告）/
+  `POST /api/maintenance/prune`（默认 dry-run）；启动时 `JobStore.purge(keep=200)`。
+- 前端修 13 项，含：迟到状态响应劫持当前任务、逐行音频按下标错位、生成按钮生成完即锁死、
+  loss 曲线 `MM…` 非法路径、API 层丢状态无超时、关标签页丢防抖保存。
+- 验证：后端 505 passed / 1 skipped、ruff 全绿；前端 50 passed、`vue-tsc` 与 `vite build` 通过。
+  测试数与重构前一致，说明是等价重构。
+- 第一轮遗留项已按用户逐条定夺在**第二轮**完成（详见 `docs/REFACTOR_2026-11.md` §7）：
+  - 补修三项误标为「已修」的缺陷：scan 静默改根（现改只读）、导出声称成功（现 strict 报 500）、
+    读回降级原因不外露（现 `readback` 字段 + 300 秒自动重试）；
+  - **任务取消**：合成逐行、对话行间、音色两个边界；`JobRegistry.cancel` 按 kind 分发；
+    对话任务原先根本没进 `/api/jobs`，本轮补上 `KIND_DIALOGUE`；新增 `test_cancellation.py`（10 项）；
+  - **core.py 全拆**：`domain/text.py`(529) + `engine/tts.py`(317) + `pipeline/synthesis.py`(571)，
+    core 1620 → 777 行；pipeline 不 import core，靠 `SynthesisHooks` 注入，测试接缝全部保留；
+  - **前端轮询收敛**：新增 `usePolling`（无重叠、失败重试、generation 防旧响应），
+    迁移 WorkshopView / VoicesView 三处"瞬时失败即永久停表"；
+  - **媒体上传后台化**：请求只落盘即返回 `uploading`，转码线程完成后自动接续分析；
+  - **覆盖率基线 79%**（pytest-cov，只记录不设门槛，CI 上传 XML）；
+  - `docs/HANDOFF.md` 顶部标记过期并指向新文档。
+- 验证（第三轮结束时的最新数字）：后端 **543 passed / 4 skipped**、ruff 全绿、覆盖率 **80%**；
+  前端 **57 passed**、`vue-tsc` 与 build 通过；GPU 冒烟（`XIANGHUA_GPU_TESTS=1`）真实推理通过。
+- **第三轮（同日）把上述清单逐条做完**：
+  - 音色推理可中断：`knnvc_runtime` 在特征分块/参考文件/匹配前三处检查，`TimbreCancelled` → `cancelled`；
+    唯一仍不可中断的是一次 `model.match` 矩阵运算；
+  - 顺带修复：音色 worker 的收尾 `_update` 在 try 之外且用 `result['键']` 取值，任何收尾异常都会让任务
+    永久停在 `running`（前端无限轮询），现已加 `.get()` 兜底 + 外层终态保证；
+  - `timbre.py` 覆盖率 43% → **61%**（新增 `test_timbre_backend_flow.py` 11 项），总覆盖率 **80%**；
+  - 前端轮询**全部收敛**：`useJobs` / `useSynthesis`（状态 + 预热）/ `useReferenceAudio` / `useTraining`
+    全部改用 `usePolling`（新增函数式 interval），并删除 `timbre.ts` 里 70 行从未被调用的 `pollTimbreJob`；
+    现在 `frontend/src` 中已无任何手写 `setInterval`；
+  - `useTraining` 的 `ref<any>` 清零（`lib/api.ts` 新增 7 个训练类型），`EventSourceLike` 处理器参数也收窄；
+  - **GPU 自动化测试**：`backend/tests/test_gpu_smoke.py`（默认跳过，`XIANGHUA_GPU_TESTS=1` 开启），
+    本机实测通过（含模型加载 28 秒）——这同时验证了 engine/pipeline 拆分没有破坏真实推理；
+  - **确定性边界修正**：跨进程同 seed 字节一致（两次实测 `6cdaf6af…`），但**同进程内重复调用不一致**；
+    原「字节级一致」结论只在每次全新进程时成立，已写入 §5 第 7 条并新增
+    `scripts/seed_determinism_check.py` 作为可执行校验。
+- 仍未做（下一轮候选）：JSON 未换 SQLite（用户既有决定）；`output/` 与媒体会话无自动清理定时器；
+  `doctor.py` 覆盖率 21%；合成页 SSE 与 500ms 轮询并存（共用 revision 守卫，不会重复应用）。
+
 ## 0. 2026-10-17 清场记录
 
 已删除：
@@ -256,6 +309,11 @@
 5. B2B API 尚缺：API Key、租户、配额、持久化队列、项目/角色、voice version、license/consent、Webhook、水印、公开 SDK。
 6. 回归只覆盖一套音色；尚未完成“换音色不换发音”“换信道不换人”等完整交换测试。
 7. ~~当前 `seed` 已记录但核心尚未真正读取；复现性仍依赖核心的确定性种子。~~ **已解决（2026-10-25 核验）**：`cfg['seed']` 实际进入每行 line_seed 与重试种子派生，引擎请求携带 seed；同配置两次全量回归输出字节级一致（sha256 抽样 11/11）。回归报告的 `settings.seed.effective` 已改为 True。
+   **边界补充（2026-11-01 实测）**：该结论只在「**每次全新进程**执行一次」时成立。
+   同一进程内连续两次调用即使 seed 相同，输出字节也不同（引擎 warm 后存在跨调用状态）。
+   验证工具：`scripts/seed_determinism_check.py`（跑 N 个独立进程比对 PCM 哈希，一致时退出码 0）。
+   因此 `scripts/tts_regression.py` 这类"一个进程跑完整套"的用法是符合该保证的，
+   而"进程内重试对比"不能用来证明确定性。
 8. 单音频自动建档已改异步 job（进程内线程，不持久化）；后端重启或多 worker 部署会丢 job，届时前端需重新上传。这是有意保留的架构缺口：只替换 `VoicePrepareJobManager` 的存储层即可，接口与前端不用改。
 9. 单音频入口按“一段自然说话音频”处理；多人素材应走 `media_ingest` 的说话人聚类与选人流程。
 

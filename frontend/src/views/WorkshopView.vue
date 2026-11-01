@@ -4,6 +4,7 @@ import { api } from '@/lib/api'
 import { usePage } from '@/composables/usePage'
 import { useTraining } from '@/composables/useTraining'
 import { useToast } from '@/composables/useToast'
+import { usePolling } from '@/composables/usePolling'
 import AudioPlayer from '@/components/AudioPlayer.vue'
 
 defineOptions({ name: 'WorkshopView' })
@@ -53,7 +54,8 @@ const rights = ref(false)
 const uploadLanguage = ref('zh')
 const busy = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
-let poller: number | undefined
+// 当前分析的会话 ID；轮询控制器在下面统一创建。
+const pollingSessionId = ref('')
 
 const job = computed<MediaJob>(() => session.value?.job || { status: 'idle', stage: '', progress: 0, message: '', error: '' })
 const selectedSpeaker = computed(() => session.value?.speakers.find((row) => row.speaker_id === session.value?.selected_speaker) || null)
@@ -108,29 +110,37 @@ async function onFile(event: Event) {
   }
 }
 
+// 分析进度。以前是一段自己写的 setInterval：请求一失败就永久停表，
+// 且没有在途保护，慢响应会覆盖更新的会话状态。现在统一走 usePolling：
+// 瞬时错误重试，结束返回 false 收表，卸载时自动停下。
+const sessionPoller = usePolling({
+  interval: 1600,
+  run: async () => {
+    const sessionId = pollingSessionId.value
+    if (!sessionId) return false
+    const data = await api.get<{ session: MediaSession }>(
+      `/api/media/sessions/${encodeURIComponent(sessionId)}`,
+    )
+    session.value = data.session
+    // ``uploading`` is the transcoding stage that now happens on a worker; it
+    // still needs polling, otherwise the UI freezes at "转码中".
+    const status = data.session.job.status
+    if (status === 'uploading' || status === 'running') return true
+    void training.refresh()
+    return false
+  },
+  onGiveUp: () => {
+    toast.error('读取分析进度失败，请刷新页面后重试。')
+  },
+})
+
 function startPolling(sessionId: string) {
-  stopPolling()
-  poller = window.setInterval(() => void pollSession(sessionId), 1600)
+  pollingSessionId.value = sessionId
+  sessionPoller.start()
 }
 
 function stopPolling() {
-  if (poller !== undefined) {
-    window.clearInterval(poller)
-    poller = undefined
-  }
-}
-
-async function pollSession(sessionId: string) {
-  try {
-    const data = await api.get<{ session: MediaSession }>(`/api/media/sessions/${encodeURIComponent(sessionId)}`)
-    session.value = data.session
-    if (data.session.job.status !== 'running') {
-      stopPolling()
-      void training.refresh()
-    }
-  } catch {
-    stopPolling()
-  }
+  sessionPoller.stop()
 }
 
 async function selectSpeaker(speakerId: string) {
@@ -173,18 +183,25 @@ async function skipProofread() {
 }
 
 async function scanModels() {
-  await training.runAction('/api/training/models/select')
+  // Only claim success — and only leave the page — when the backend agreed.
+  if (!(await training.runAction('/api/training/models/select'))) return
   toast.success('训练产物已填入模型配置，回工作台即可用新声音生成。')
   setPage('workbench')
 }
 
-// 训练运行时轮询
-let trainTimer: number | undefined
+// 训练运行时轮询（同一套轮询器：失败重试、无重叠、卸载自动停）
+const trainPoller = usePolling({
+  interval: 3000,
+  immediate: false,
+  run: async () => {
+    if (training.runState.value !== 'running') return true
+    await training.refresh()
+    return true
+  },
+})
+
 function ensureTrainPolling() {
-  if (trainTimer !== undefined) return
-  trainTimer = window.setInterval(() => {
-    if (training.runState.value === 'running') void training.refresh()
-  }, 3000)
+  if (!trainPoller.active()) trainPoller.start()
 }
 
 onMounted(() => {
@@ -194,10 +211,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopPolling()
-  if (trainTimer !== undefined) {
-    window.clearInterval(trainTimer)
-    trainTimer = undefined
-  }
+  trainPoller.stop()
 })
 </script>
 
@@ -236,7 +250,7 @@ onUnmounted(() => {
         <button class="btn-primary" type="button" :disabled="busy" @click="fileInput?.click()">{{ busy ? '分析中…' : '选择文件' }}</button>
       </div>
       <input ref="fileInput" type="file" accept="video/*,audio/*,.mp4,.mov,.mp3,.wav,.m4a" style="display:none" @change="onFile">
-      <div v-if="session && job.status === 'running'" style="margin-top:14px">
+      <div v-if="session && (job.status === 'running' || job.status === 'uploading')" style="margin-top:14px">
         <div style="display:flex;align-items:center;gap:9px">
           <span class="gen-progress" style="height:4px"><span :style="{ width: `${Math.round((job.progress || 0) * 100)}%` }"></span></span>
           <span class="mono" style="font-size:10.5px;color:var(--text3)">{{ job.stage || '分析中' }} {{ Math.round((job.progress || 0) * 100) }}%</span>
@@ -317,8 +331,8 @@ onUnmounted(() => {
           <div><b>{{ training.checkpointRows.value.length }}</b><span>检查点</span></div>
         </div>
         <svg v-if="training.lossPath.value.length" class="loss" viewBox="0 0 100 40" preserveAspectRatio="none">
-          <path :d="`M${training.lossPath.value[0]}`" fill="none" stroke="var(--text2)" stroke-width="1" />
-          <path v-if="training.lossPath.value[1]" :d="`M${training.lossPath.value[1]}`" fill="none" stroke="var(--border2)" stroke-width="1" stroke-dasharray="2 2" />
+          <path :d="training.lossPath.value[0]" fill="none" stroke="var(--text2)" stroke-width="1" />
+          <path v-if="training.lossPath.value[1]" :d="training.lossPath.value[1]" fill="none" stroke="var(--border2)" stroke-width="1" stroke-dasharray="2 2" />
         </svg>
         <pre class="logbox">{{ training.logText.value.slice(-600) }}</pre>
         <div style="display:flex;gap:8px;margin-top:10px">

@@ -1,11 +1,13 @@
 import { ref, watch } from 'vue'
 import {
   api,
+  errorMessage,
   getReferenceAudioPrepareSnapshot,
   startReferenceAudioPrepare,
   type ReferenceAudioPrepareSnapshot,
 } from '@/lib/api'
 import { referenceQualityFailed, type ReferenceReport } from './referenceAudio'
+import { createPolling } from './usePolling'
 import { useConfig } from './useConfig'
 import { useToast } from './useToast'
 
@@ -38,10 +40,11 @@ const prompt = ref<Prompt | null>(null)
 const pair = ref<Pair | null>(null)
 const patchBusy = ref(false)
 
-let timer: number | undefined
 let token = 0
-let pollFailures = 0
 let lookupTimer: number | undefined
+// Current prepare job, consumed by the poller below.
+const prepareJobId = ref('')
+let prepareStartedAt = 0
 
 function formatSize(size: number) {
   return size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1024))} KB`
@@ -59,11 +62,8 @@ watch([uploading, stage, progress], () => {
 })
 
 function stopPolling() {
-  if (timer !== undefined) {
-    window.clearTimeout(timer)
-    timer = undefined
-  }
   token += 1
+  preparePoll.stop()
 }
 
 function finish() {
@@ -72,45 +72,39 @@ function finish() {
   progress.value = 0
 }
 
-async function pollPrepare(jobId: string, currentToken: number, startedAt: number) {
-  if (currentToken !== token) return
-  if (Date.now() - startedAt > TIMEOUT_MS) {
-    stopPolling()
-    finish()
-    toast.error('音色样本准备超时，请换一段更短的录音。')
-    return
-  }
-  try {
-    const job = await getReferenceAudioPrepareSnapshot(jobId)
-    if (currentToken !== token) return
-    pollFailures = 0
+// 参考音准备进度。原先是一套手写的 setTimeout 自链（自己维护 token、失败计数和
+// 超时），与另外几处实现逐渐漂移；现在统一用 createPolling——它自带防重叠、
+// 失败重试和 generation 失效，超时仍由这里判断（业务含义，不属于轮询器）。
+const preparePoll = createPolling({
+  interval: POLL_MS,
+  failLimit: POLL_FAILURE_LIMIT,
+  run: async () => {
+    if (!prepareJobId.value) return false
+    if (Date.now() - prepareStartedAt > TIMEOUT_MS) {
+      finish()
+      toast.error('音色样本准备超时，请换一段更短的录音。')
+      return false
+    }
+    const job = await getReferenceAudioPrepareSnapshot(prepareJobId.value)
     progress.value = Math.max(0, Math.min(1, Number(job.progress) || 0))
     stage.value = job.stage || '准备中'
     if (job.status === 'done') {
-      stopPolling()
       finish()
       applyPrepare(job)
-      return
+      return false
     }
     if (job.status === 'failed') {
-      stopPolling()
       finish()
       toast.error(job.error || job.message || '音色样本准备失败。')
-      return
+      return false
     }
-    timer = window.setTimeout(() => void pollPrepare(jobId, currentToken, startedAt), POLL_MS)
-  } catch (error) {
-    if (currentToken !== token) return
-    pollFailures += 1
-    if (pollFailures >= POLL_FAILURE_LIMIT) {
-      stopPolling()
-      finish()
-      toast.error(error instanceof Error ? error.message : String(error))
-      return
-    }
-    timer = window.setTimeout(() => void pollPrepare(jobId, currentToken, startedAt), POLL_MS)
-  }
-}
+    return true
+  },
+  onGiveUp: (error) => {
+    finish()
+    toast.error(errorMessage(error) || '读取准备进度失败，请重试。')
+  },
+})
 
 function applyPrepare(job: ReferenceAudioPrepareSnapshot) {
   const result = job.result
@@ -145,7 +139,6 @@ async function upload(file: File) {
   stopPolling()
   const currentToken = token
   const startedAt = Date.now()
-  pollFailures = 0
   progress.value = 0
   stage.value = '上传中'
   uploading.value = true
@@ -170,7 +163,9 @@ async function upload(file: File) {
     const started = await startReferenceAudioPrepare(body)
     if (currentToken !== token) return
     stage.value = '排队中'
-    timer = window.setTimeout(() => void pollPrepare(started.job_id, currentToken, startedAt), POLL_MS)
+    prepareJobId.value = started.job_id
+    prepareStartedAt = startedAt
+    preparePoll.start()
   } catch (error) {
     if (currentToken !== token) return
     stopPolling()

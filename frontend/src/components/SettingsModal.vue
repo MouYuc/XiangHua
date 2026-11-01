@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api, listLexicon, upsertLexicon, deleteLexicon, type DoctorReport, type LexiconEntry } from '@/lib/api'
 import { useConfig } from '@/composables/useConfig'
 import { useTheme } from '@/composables/useTheme'
@@ -15,6 +15,23 @@ const scanning = ref(false)
 const envRows = ref<{ name: string; status: string; detail: string; fix: string }[]>([])
 const repairing = ref(false)
 const doctor = ref<DoctorReport | null>(null)
+
+/**
+ * Engine-root status shown next to the path.
+ *
+ * This used to be a hardcoded green "已检测" next to a "未配置" path — the dialog
+ * asserted success before anything had been checked. Now it reflects reality:
+ * configured or not, scanned or not, and whether the scan reported a problem.
+ */
+const rootStatus = computed(() => {
+  if (!config.gpt_sovits_root) return { tone: 'warn', label: '未配置' }
+  if (scanning.value) return { tone: 'mut', label: '检测中…' }
+  if (doctor.value?.summary && !doctor.value.rows.every((row) => row.status === 'ok')) {
+    return { tone: 'warn', label: '需检查' }
+  }
+  if (!envRows.value.length) return { tone: 'mut', label: '未检测' }
+  return { tone: 'ok', label: '已检测' }
+})
 
 // —— 发音词典：多音字 / 专名读法修正，仅改读音不改字幕 ——
 const lexicon = ref<LexiconEntry[]>([])
@@ -110,7 +127,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="modal" role="dialog" aria-label="设置" @click.stop>
+  <div class="modal" role="dialog" aria-modal="true" aria-label="设置" @click.stop @keydown.esc="emit('close')">
     <div class="mh">
       <h2>设置</h2>
       <p>改动即自动保存。声音与素材相关操作都在对应页面内。</p>
@@ -118,7 +135,7 @@ onMounted(() => {
     <div class="mb" style="gap:0">
       <div class="set-row">
         <span class="k">引擎路径</span>
-        <span class="v"><span class="path-chip">{{ config.gpt_sovits_root || '未配置' }}</span> <span class="tag ok">已检测</span></span>
+        <span class="v"><span class="path-chip">{{ config.gpt_sovits_root || '未配置' }}</span> <span class="tag" :class="rootStatus.tone">{{ rootStatus.label }}</span></span>
         <button class="mini" style="height:24px" :disabled="repairing" @click="runDoctor">{{ repairing ? '自检中…' : '自检' }}</button>
       </div>
       <div class="set-row">

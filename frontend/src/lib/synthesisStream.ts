@@ -1,8 +1,14 @@
+/**
+ * The subset of the browser `EventSource` this module uses. The handler
+ * parameters are `Event` rather than `any`: this file only ever reads
+ * `MessageEvent.data`, and a narrower type keeps a caller from passing a stream
+ * whose contract differs.
+ */
 export type EventSourceLike = {
   close: () => void
-  onopen: ((event: any) => void) | null
-  onmessage: ((event: any) => void) | null
-  onerror: ((event: any) => void) | null
+  onopen: ((event: Event) => void) | null
+  onmessage: ((event: MessageEvent) => void) | null
+  onerror: ((event: Event) => void) | null
 }
 
 export type SynthesisStreamOptions = {

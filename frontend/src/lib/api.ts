@@ -137,24 +137,92 @@ export type ReferenceAudioPrepareSnapshot = {
   updated_at: string
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, { ...options, headers: { ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...options.headers } })
-  if (response.status === 204) return undefined as T
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.detail || '请求失败')
-  return data as T
+/** A failed API call, carrying the HTTP status so callers can branch on it. */
+export class ApiError extends Error {
+  readonly status: number
+  readonly code: string
+
+  constructor(message: string, status: number, code = '') {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+  }
+
+  /** 404 from a job-status route means the job is gone, not that the call failed. */
+  get isMissing(): boolean {
+    return this.status === 404
+  }
+}
+
+/** Abort a request that the backend never answers, so spinners can end. */
+const DEFAULT_TIMEOUT_MS = 30_000
+
+export type RequestOptions = {
+  method?: string
+  body?: BodyInit | null
+  /** Override for slow endpoints (uploads, model scans). */
+  timeoutMs?: number
+  /** Keep the request alive across a page unload (used by the autosave flush). */
+  keepalive?: boolean
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...init } = options
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  const isForm = init.body instanceof FormData
+  try {
+    const response = await fetch(path, {
+      ...init,
+      signal: controller.signal,
+      headers: isForm || !init.body ? undefined : { 'Content-Type': 'application/json' },
+    })
+    if (response.status === 204) return undefined as T
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      const detail = typeof data?.detail === 'string' ? data.detail : ''
+      throw new ApiError(detail || `请求失败（HTTP ${response.status}）`, response.status, String(data?.code ?? ''))
+    }
+    return data as T
+  } catch (error) {
+    // An abort surfaces as a DOMException; turn it into something the UI can show.
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiError('请求超时，请检查后端是否仍在运行。', 0, 'TIMEOUT')
+    }
+    if (error instanceof TypeError) {
+      throw new ApiError('无法连接后端服务，请确认它已启动。', 0, 'NETWORK')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body: body instanceof FormData ? body : JSON.stringify(body ?? {}) }),
-  put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
+  get: <T>(path: string, options: RequestOptions = {}) => request<T>(path, options),
+  post: <T>(path: string, body?: unknown, options: RequestOptions = {}) =>
+    request<T>(path, { ...options, method: 'POST', body: body instanceof FormData ? body : JSON.stringify(body ?? {}) }),
+  put: <T>(path: string, body: unknown, options: RequestOptions = {}) =>
+    request<T>(path, { ...options, method: 'PUT', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+}
+
+/** 让调用方判断错误文案时不必重复写 `instanceof`。 */
+export function errorMessage(error: unknown): string {
+  if (error instanceof ApiError) return error.message
+  if (error instanceof Error) return error.message
+  return String(error)
 }
 
 /** 上传一次，后端在后台完成切片 / 质检 / 转写。 */
 export const startReferenceAudioPrepare = (body: FormData) =>
-  request<ReferenceAudioPrepareStart>('/api/reference-audio/prepare', { method: 'POST', body })
+  request<ReferenceAudioPrepareStart>('/api/reference-audio/prepare', {
+    method: 'POST',
+    body,
+    // Uploading a long recording is streamed to disk before the job starts.
+    timeoutMs: 10 * 60_000,
+  })
 
 export const getReferenceAudioPrepareSnapshot = (jobId: string) =>
   request<ReferenceAudioPrepareSnapshot>(`/api/reference-audio/prepare/${encodeURIComponent(jobId)}`)
@@ -187,6 +255,38 @@ export const cancelJob = (jobId: string) =>
 export const fetchHistory = () => api.get<HistoryEntry[]>('/api/history')
 
 export const clearHistory = () => api.delete<void>('/api/history')
+
+// —— 训练工作区（此前整条链路是 `any`，后端字段一改就要到运行时才炸） ——
+
+export type TrainingStepState = {
+  status: string
+  title?: string
+  message?: string
+  progress?: { overall_percent?: number } & Record<string, unknown>
+}
+export type TrainingState = {
+  steps?: Record<string, TrainingStepState>
+  exp?: string
+  job_id?: string
+}
+export type TrainingJobRow = { job_id: string } & Record<string, unknown>
+export type EnvironmentRow = { name: string; status: string; detail: string; fix: string }
+export type TrainingStatusResponse = {
+  state?: TrainingState
+  stats?: Record<string, number | string | null>
+  running?: TrainingJobRow[]
+  log?: { text: string; job_id?: string }
+  environment?: EnvironmentRow[]
+  last_job_id?: string
+}
+export type TrainingMetricRow = {
+  step?: number
+  step_idx?: number
+  loss_d?: number
+  loss_g?: number
+} & Record<string, unknown>
+export type CheckpointRow = { name?: string; step?: number } & Record<string, unknown>
+export type TranscriptRow = { path: string; text: string; audio_url?: string }
 
 // —— 用户发音词典（多音字 / 专名读法修正） ——
 

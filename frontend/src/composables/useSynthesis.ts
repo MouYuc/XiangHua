@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import {
+  ApiError,
   api,
   type SynthesisOutput,
   type SynthesisReadiness,
@@ -7,10 +8,13 @@ import {
   type SynthesisStreamEvent,
 } from '@/lib/api'
 import { createSynthesisStream, shouldApplySynthesisRevision, type SynthesisStreamController } from '@/lib/synthesisStream'
+import { createPolling } from './usePolling'
 import { useConfig } from './useConfig'
 import { useToast } from './useToast'
 
 const POLL_FAILURE_LIMIT = 5
+/** Statuses after which the job will never change again. */
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled'])
 const configStore = useConfig()
 const toast = useToast()
 
@@ -31,11 +35,23 @@ const job = ref<SynthesisSnapshot | null>(null)
 const retryingIndex = ref<number | null>(null)
 const readiness = ref<SynthesisReadiness>({ status: 'warming', message: '模型预热中。', error: '' })
 
-let poller: number | undefined
-let readinessPoller: number | undefined
 let stream: SynthesisStreamController | null = null
 let latestRevision = -1
-let pollFailures = 0
+// The job id this composable is currently following. A status response or SSE
+// event for any other job is discarded: without this, a poll issued 500 ms
+// before `start()` resolved for the *previous* job and its `done` snapshot killed
+// the new job's poller and EventSource while that job was still running.
+let trackedJobId = ''
+
+/** Non-empty, non-comment lines this run was asked to synthesise, in order. */
+const generatedLines = ref<string[]>([])
+
+function parseScriptLines(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'))
+}
 
 const progress = computed(() => {
   const total = Number(job.value?.total || 0)
@@ -94,10 +110,8 @@ function normalizeSnapshot(data: Partial<SynthesisSnapshot> & { outputs?: unknow
 }
 
 function stopTracking() {
-  if (poller) {
-    window.clearInterval(poller)
-    poller = undefined
-  }
+  trackedJobId = ''
+  statusPoll.stop()
   stream?.close()
   stream = null
 }
@@ -117,11 +131,14 @@ function applySnapshot(data: Partial<SynthesisSnapshot> & { outputs?: unknown[] 
     retryingIndex.value = null
   }
 
-  if (snapshot.status === 'done' || snapshot.status === 'failed') {
+  if (TERMINAL_STATUSES.has(snapshot.status)) {
     busy.value = false
     stopTracking()
     if (snapshot.status === 'done') {
       toast.success(`完成 ${snapshot.completed}/${snapshot.total} 条配音。`)
+    } else if (snapshot.status === 'cancelled') {
+      // Not an error: the user asked for this, and completed takes stay usable.
+      toast.info(snapshot.message || '任务已取消。')
     } else {
       toast.error(snapshot.message || snapshot.error || '合成失败。')
     }
@@ -134,34 +151,57 @@ function applyStreamEvent(event: SynthesisStreamEvent) {
   }
 }
 
-async function pollStatus(jobId: string) {
-  try {
-    const data = await api.get<SynthesisSnapshot & { revision?: number }>(`/api/synthesis/status/${jobId}`)
-    pollFailures = 0
-    if (!shouldApplySynthesisRevision(data.revision, latestRevision)) return
-    if (Number.isFinite(Number(data.revision))) latestRevision = Number(data.revision)
-    applySnapshot(data)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    pollFailures += 1
-    const missing = message.includes('合成任务不存在')
-    if (!missing && pollFailures < POLL_FAILURE_LIMIT) return
+// 500 ms status polling, kept alongside the SSE stream on purpose: the stream
+// carries semantic-token progress, the poll is the fallback when it dies. Both
+// go through the same revision guard, so a late poll cannot overwrite a newer
+// stream event (and vice versa). `createPolling` supplies the no-overlap and
+// retry behaviour the hand-rolled interval was missing.
+const statusPoll = createPolling({
+  interval: 500,
+  immediate: false,
+  failLimit: POLL_FAILURE_LIMIT,
+  run: async () => {
+    const jobId = trackedJobId
+    if (!jobId) return false
+    try {
+      const data = await api.get<SynthesisSnapshot & { revision?: number }>(
+        `/api/synthesis/status/${jobId}`,
+      )
+      if (trackedJobId !== jobId) return false
+      if (!shouldApplySynthesisRevision(data.revision, latestRevision)) return true
+      if (Number.isFinite(Number(data.revision))) latestRevision = Number(data.revision)
+      applySnapshot(data)
+      return true
+    } catch (error) {
+      if (trackedJobId !== jobId) return false
+      // 404 means the job is really gone; anything else may be a transient blip.
+      if (error instanceof ApiError && error.status === 404) {
+        stopTracking()
+        busy.value = false
+        job.value = null
+        toast.error('合成任务已不存在，请重新生成。')
+        return false
+      }
+      throw error
+    }
+  },
+  onGiveUp: () => {
     stopTracking()
     busy.value = false
     job.value = null
-    toast.error(missing ? '合成任务已不存在，请重新生成。' : '读取合成进度失败，请稍后重试。')
-  }
-}
+    toast.error('读取合成进度失败，请稍后重试。')
+  },
+})
 
 function startTracking(jobId: string) {
   stopTracking()
-  pollFailures = 0
-  poller = window.setInterval(() => void pollStatus(jobId), 500)
-  void pollStatus(jobId)
+  trackedJobId = jobId
+  statusPoll.start()
   stream = createSynthesisStream({
     jobId,
     createEventSource: (url) => new EventSource(url),
     onEvent: (raw) => {
+      if (trackedJobId !== jobId) return
       try {
         const event = JSON.parse(raw) as SynthesisStreamEvent & { snapshot?: SynthesisSnapshot }
         const revision = event.revision ?? event.snapshot?.revision
@@ -186,11 +226,12 @@ async function start(text: string) {
   job.value = null
   latestRevision = -1
   retryingIndex.value = null
+  generatedLines.value = parseScriptLines(text)
   stopTracking()
   try {
     const data = await api.post<SynthesisSnapshot>('/api/synthesis', synthesisRequestBody(text))
     applySnapshot(data)
-    if (data.job_id && data.status !== 'done' && data.status !== 'failed') {
+    if (data.job_id && !TERMINAL_STATUSES.has(data.status)) {
       startTracking(data.job_id)
     }
   } catch (error) {
@@ -206,11 +247,12 @@ async function retry(index: number) {
   retryingIndex.value = index
   job.value = null
   latestRevision = -1
+  generatedLines.value = [item.text]
   stopTracking()
   try {
     const data = await api.post<SynthesisSnapshot>('/api/synthesis', synthesisRequestBody(item.text))
     applySnapshot(data)
-    if (data.job_id && data.status !== 'done' && data.status !== 'failed') {
+    if (data.job_id && !TERMINAL_STATUSES.has(data.status)) {
       startTracking(data.job_id)
     }
   } catch (error) {
@@ -221,20 +263,30 @@ async function retry(index: number) {
 }
 
 function clearResults() {
-  document.querySelectorAll<HTMLAudioElement>('.result-list audio').forEach((audio) => audio.pause())
+  // No DOM poking from a composable: the view owns playback. It watches
+  // `outputs` and stops its own <AudioPlayer> instances.
   outputs.value = []
   job.value = null
   latestRevision = -1
+  generatedLines.value = []
   stopTracking()
 }
+
+// 模型预热状态。轮询在「已就绪/已失败」时收表，在 warming/idle（GPU 被占、
+// 稍后自动重试）时继续，避免预热完成后界面还停在旧状态。
+const readinessPoll = createPolling({
+  interval: 1500,
+  immediate: false,
+  run: async () => {
+    if (readiness.value.status === 'ready' || readiness.value.status === 'failed') return false
+    await refreshReadiness()
+    return true
+  },
+})
 
 async function refreshReadiness() {
   try {
     readiness.value = await api.get<SynthesisReadiness>('/api/synthesis/readiness')
-    if (readiness.value.status !== 'warming' && readinessPoller) {
-      window.clearInterval(readinessPoller)
-      readinessPoller = undefined
-    }
   } catch (error) {
     readiness.value = {
       status: 'failed',
@@ -247,9 +299,7 @@ async function refreshReadiness() {
 async function retryWarmup() {
   try {
     readiness.value = await api.post<SynthesisReadiness>('/api/synthesis/readiness/retry')
-    if (readiness.value.status === 'warming' && !readinessPoller) {
-      readinessPoller = window.setInterval(() => void refreshReadiness(), 1200)
-    }
+    readinessPoll.start()
   } catch (error) {
     toast.error(error instanceof Error ? error.message : String(error))
   }
@@ -257,17 +307,14 @@ async function retryWarmup() {
 
 function initSynthesis() {
   void refreshReadiness()
-  if (!readinessPoller) {
-    readinessPoller = window.setInterval(() => {
-      if (readiness.value.status === 'warming') void refreshReadiness()
-    }, 1500)
-  }
+  readinessPoll.start()
 }
 
 export function useSynthesis() {
   return {
     busy,
     outputs,
+    generatedLines,
     job,
     retryingIndex,
     readiness,

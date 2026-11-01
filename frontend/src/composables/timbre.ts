@@ -132,10 +132,6 @@ export function timbreSourceOriginLabel(origin: unknown): string {
   return '其它来源'
 }
 
-export function isTimbreJobSettled(job: TimbreJob | null | undefined): boolean {
-  return job?.status === 'done' || job?.status === 'failed'
-}
-
 /** job.progress 是 0~1；页面上的进度条用整数百分比。 */
 export function timbreProgressPercent(job: TimbreJob | null | undefined): number {
   const raw = Number(job?.progress)
@@ -251,75 +247,4 @@ export function timbreVramSummary(vram: TimbreVram): string {
   return vram.loaded
     ? `模型已加载 · 空闲 ${free} / 共 ${total}`
     : `模型未加载 · 空闲 ${free} / 共 ${total}`
-}
-
-export type TimbrePollerHandlers = {
-  onUpdate?: (job: TimbreJob) => void
-  onSettled?: (job: TimbreJob) => void
-  onError?: (message: string) => void
-}
-
-export type TimbrePollerOptions = { intervalMs?: number; failureLimit?: number }
-export type TimbrePoller = { stop: () => void }
-
-/**
- * 轮询音色任务快照（`GET /api/timbre/status/{job_id}`）。
- *
- * 与合成页的轮询保持一致的行为：任务结束后停止，连续失败到上限也停止，
- * 避免页面被一个已经不存在的任务无限拖着请求。
- */
-export function pollTimbreJob(
-  jobId: string,
-  fetchJob: (jobId: string) => Promise<TimbreJob>,
-  handlers: TimbrePollerHandlers = {},
-  options: TimbrePollerOptions = {},
-): TimbrePoller {
-  const intervalMs = Math.max(100, options.intervalMs ?? 900)
-  const failureLimit = Math.max(1, options.failureLimit ?? 5)
-  let active = true
-  let timer: ReturnType<typeof setInterval> | null = null
-  let failures = 0
-  let inflight = false
-
-  function stop() {
-    active = false
-    if (timer !== null) {
-      clearInterval(timer)
-      timer = null
-    }
-  }
-
-  async function tick() {
-    if (!active || inflight) return
-    inflight = true
-    try {
-      const job = await fetchJob(jobId)
-      if (!active) return
-      failures = 0
-      handlers.onUpdate?.(job)
-      if (isTimbreJobSettled(job)) {
-        stop()
-        handlers.onSettled?.(job)
-      }
-    } catch (error) {
-      if (!active) return
-      const message = error instanceof Error ? error.message : String(error)
-      if (message.includes('不存在')) {
-        stop()
-        handlers.onError?.(message)
-        return
-      }
-      failures += 1
-      if (failures >= failureLimit) {
-        stop()
-        handlers.onError?.(message)
-      }
-    } finally {
-      inflight = false
-    }
-  }
-
-  void tick()
-  timer = setInterval(() => { void tick() }, intervalMs)
-  return { stop }
 }

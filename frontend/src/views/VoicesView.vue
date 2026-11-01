@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { activateVoiceCard, api, type VoiceCard } from '@/lib/api'
+import { activateVoiceCard, api, errorMessage, type VoiceCard } from '@/lib/api'
 import {
   asTimbreConvertResult,
   formatTimbreSeconds,
@@ -13,6 +13,7 @@ import { usePage } from '@/composables/usePage'
 import { useVoices } from '@/composables/useVoices'
 import { useConfig } from '@/composables/useConfig'
 import { useToast } from '@/composables/useToast'
+import { usePolling } from '@/composables/usePolling'
 import AudioPlayer from '@/components/AudioPlayer.vue'
 import WaveForm from '@/components/WaveForm.vue'
 
@@ -117,7 +118,6 @@ const convertStage = ref('')
 const resultUrl = ref('')
 const resultName = ref('')
 const resultError = ref('')
-let pollTimer: number | undefined
 
 async function loadSources() {
   try {
@@ -180,39 +180,46 @@ function resetConvert() {
   convertProgress.value = 0
 }
 
-function pollConvert(jobId: string) {
-  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
-  const tick = async () => {
-    try {
-      const job = await api.get<TimbreJob>(
-        `/api/timbre/status/${encodeURIComponent(jobId)}`,
-      )
-      convertProgress.value = Math.round(Math.min(1, Math.max(0, Number(job.progress) || 0)) * 100)
-      convertStage.value = job.phase === 'encode' ? '编码参考音并转换' : job.message || '处理中'
-      if (job.status === 'done') {
-        const result = asTimbreConvertResult(job.result)
-        if (result?.url) {
-          resultUrl.value = result.url
-          resultName.value = result.file_name
-          toast.success(`转换完成，用时 ${formatTimbreSeconds(result.seconds_taken)}。`)
-        } else {
-          resultError.value = '转换完成但未返回音频。'
-        }
-        converting.value = false
-        return
+// 音色转换进度。旧实现用 setTimeout 自链，任何一次请求失败就永久停在
+// 错误态（服务端任务其实还在跑）。usePolling 会重试瞬时错误、避免请求重叠，
+// 并在组件卸载时自动停下。
+const convertJobId = ref('')
+const convertPoller = usePolling({
+  interval: 1200,
+  run: async () => {
+    const jobId = convertJobId.value
+    if (!jobId) return false
+    const job = await api.get<TimbreJob>(`/api/timbre/status/${encodeURIComponent(jobId)}`)
+    convertProgress.value = Math.round(Math.min(1, Math.max(0, Number(job.progress) || 0)) * 100)
+    convertStage.value = job.phase === 'encode' ? '编码参考音并转换' : job.message || '处理中'
+    if (job.status === 'done') {
+      const result = asTimbreConvertResult(job.result)
+      if (result?.url) {
+        resultUrl.value = result.url
+        resultName.value = result.file_name
+        toast.success(`转换完成，用时 ${formatTimbreSeconds(result.seconds_taken)}。`)
+      } else {
+        resultError.value = '转换完成但未返回音频。'
       }
-      if (job.status === 'failed') {
-        resultError.value = timbreErrorMessage(job) || job.error || '转换失败。'
-        converting.value = false
-        return
-      }
-      pollTimer = window.setTimeout(() => void tick(), 1200)
-    } catch (error) {
-      resultError.value = error instanceof Error ? error.message : String(error)
       converting.value = false
+      return false
     }
-  }
-  void tick()
+    if (job.status === 'failed') {
+      resultError.value = timbreErrorMessage(job) || job.error || '转换失败。'
+      converting.value = false
+      return false
+    }
+    return true
+  },
+  onGiveUp: (error: unknown) => {
+    resultError.value = errorMessage(error) || '无法读取转换进度，请稍后重试。'
+    converting.value = false
+  },
+})
+
+function pollConvert(jobId: string) {
+  convertJobId.value = jobId
+  convertPoller.start()
 }
 
 async function releaseVram() {
@@ -230,7 +237,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
+  convertPoller.stop()
 })
 </script>
 

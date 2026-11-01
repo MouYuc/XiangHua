@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useConfig, ACCENT_OPTIONS, LANGUAGE_OPTIONS } from '@/composables/useConfig'
 import { usePage } from '@/composables/usePage'
 import { useReferenceAudio } from '@/composables/useReferenceAudio'
@@ -44,11 +44,30 @@ const scriptText = computed(() => speech.value.map((line) => line.text).join('\n
 
 const charCount = computed(() => speech.value.reduce((sum, line) => sum + line.text.length, 0))
 
-/** outputs 与 speech 行按顺序一一对应。 */
-function outputFor(lineIndex: number) {
+/**
+ * 把一行台词映射到它对应的输出。
+ *
+ * 不能按下标直接对位：新增、合并或删除一行后，`speech` 的位置与后端返回的
+ * `outputs` 顺序就错开了，界面会把上一句的音频挂到这一句上。这里用「文本 +
+ * 同文本中的序号」作为键，编辑过的行自然找不到输出，于是显示为待生成。
+ */
+function outputFor(lineIndex: number): (typeof synthesis.outputs.value)[number] | null {
   const position = speech.value.findIndex((line) => line.index === lineIndex)
   if (position < 0) return null
-  return synthesis.outputs.value[position] ?? null
+  const key = speech.value[position]?.text.trim() ?? ''
+  if (!key) return null
+  const generated = synthesis.generatedLines.value
+  let ordinal = 0
+  for (let i = 0; i < position; i += 1) {
+    if (speech.value[i]?.text.trim() === key) ordinal += 1
+  }
+  let seen = 0
+  for (let i = 0; i < generated.length; i += 1) {
+    if (generated[i] !== key) continue
+    if (seen === ordinal) return synthesis.outputs.value[i] ?? null
+    seen += 1
+  }
+  return null
 }
 
 type LineState = 'idle' | 'done' | 'warn' | 'failed' | 'generating' | 'queued'
@@ -150,7 +169,9 @@ function restoreDraft(text: string) {
 
 function onLineKeydown(event: KeyboardEvent, index: number) {
   const target = event.target as HTMLTextAreaElement
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+  // Ctrl/Cmd+Enter means "generate", so it must not fall into the split branch.
+  const command = event.ctrlKey || event.metaKey
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !command) {
     event.preventDefault()
     const before = target.value.slice(0, target.selectionStart)
     const after = target.value.slice(target.selectionStart)
@@ -173,9 +194,6 @@ function onLineKeydown(event: KeyboardEvent, index: number) {
         element.setSelectionRange(previous.length, previous.length)
       }
     })
-  } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-    event.preventDefault()
-    void generate()
   }
 }
 
@@ -185,15 +203,17 @@ function autoResize(event: Event) {
   target.style.height = `${target.scrollHeight}px`
 }
 
-// Ctrl+Enter 全局生成（仅工作台生效）
+// Ctrl+Enter 全局生成（仅工作台生效）。注册与注销成对，避免离开页面后仍然劫持按键。
 const { page } = usePage()
 function onGlobalKey(event: KeyboardEvent) {
   if (page.value !== 'workbench') return
-  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') void generate()
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+    event.preventDefault()
+    void generate()
+  }
 }
-if (typeof window !== 'undefined') {
-  window.addEventListener('keydown', onGlobalKey)
-}
+onMounted(() => window.addEventListener('keydown', onGlobalKey))
+onUnmounted(() => window.removeEventListener('keydown', onGlobalKey))
 
 // —— 检查器 ——
 const currentProfile = computed(() => voices.profileById(config.voice_profile_id || 'current'))
@@ -201,7 +221,8 @@ const voiceName = computed(() => voices.displayName(currentProfile.value))
 const voiceAvatar = computed(() => voices.avatarText(voiceName.value))
 const refOk = computed(() => Boolean(config.ref_audio?.trim()))
 
-const LANG_SEG = [{ key: 'auto', label: '自动' }, ...LANGUAGE_OPTIONS.map((item) => ({ key: item.value, label: item.label }))]
+// 后端没有 "自动" 档位（text_lang 恒为具体语种），所以这里只列出真实可选值。
+const LANG_SEG = LANGUAGE_OPTIONS.map((item) => ({ key: item.value, label: item.label }))
 const activeLang = computed(() => config.prompt_lang)
 function setLang(key: string) {
   config.prompt_lang = (key === 'auto' ? 'zh' : key) as typeof config.prompt_lang
@@ -387,7 +408,7 @@ const estimatedSeconds = computed(() => Math.max(5, Math.round(charCount.value *
         <div class="ins-sec">
           <div class="h">语言</div>
           <div class="seg">
-            <button v-for="item in LANG_SEG" :key="item.key" type="button" :class="{ on: activeLang === (item.key === 'auto' ? 'zh' : item.key) }" @click="setLang(item.key)">{{ item.label }}</button>
+            <button v-for="item in LANG_SEG" :key="item.key" type="button" :class="{ on: activeLang === item.key }" @click="setLang(item.key)">{{ item.label }}</button>
           </div>
         </div>
 
@@ -435,7 +456,7 @@ const estimatedSeconds = computed(() => Math.max(5, Math.round(charCount.value *
           引擎未就绪：{{ synthesis.readiness.value.error || synthesis.readiness.value.message }}
           <button class="mini" style="height:22px;margin-left:6px" type="button" @click="synthesis.retryWarmup()">重试预热</button>
         </div>
-        <button class="btn-primary" style="width:100%" :disabled="synthesis.busy.value || !pendingCount" @click="generate">
+        <button class="btn-primary" style="width:100%" :disabled="synthesis.busy.value" @click="generate">
           <svg class="ic sm" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13l11-6.5z" /></svg>
           {{ synthesis.busy.value ? '生成中…' : `生成 ${pendingCount || speech.length} 句` }}
         </button>

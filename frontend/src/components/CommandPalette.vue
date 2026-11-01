@@ -57,15 +57,23 @@ function move(step: number) {
   selected.value = (selected.value + step + total) % total
 }
 
-function runSelected() {
-  const item = items.value[selected.value]
+/** Run one item (by reference, not by index — a click must run what was clicked). */
+function runItem(item: { run: () => void } | undefined) {
   if (!item) return
   item.run()
   emit('close')
 }
 
+function runSelected() {
+  runItem(items.value[selected.value])
+}
+
 function onKeydown(event: KeyboardEvent) {
-  if (event.key === 'ArrowDown') {
+  if (event.key === 'Escape') {
+    // The footer and the top-right chip both promise ESC closes the palette.
+    event.preventDefault()
+    emit('close')
+  } else if (event.key === 'ArrowDown') {
     event.preventDefault()
     move(1)
   } else if (event.key === 'ArrowUp') {
@@ -100,7 +108,7 @@ function avatarFor(item: Item) {
 </script>
 
 <template>
-  <div class="cmdk" role="dialog" aria-label="命令面板" @keydown="onKeydown">
+  <div class="cmdk" role="dialog" aria-modal="true" aria-label="命令面板" @keydown="onKeydown">
     <div class="in">
       <svg class="ic sm" viewBox="0 0 24 24" style="color:var(--text3)"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>
       <input ref="input" v-model="query" placeholder="搜索操作、声音，或直接跳转…">
@@ -116,7 +124,7 @@ function avatarFor(item: Item) {
         :style="index === selected ? 'background:var(--surface2)' : ''"
         type="button"
         @mouseenter="selected = index"
-        @click="runSelected()"
+        @click="runItem(item)"
       >
         <span v-if="item.icon === 'voice'" class="v-avatar" style="width:22px;height:22px;font-size:10px">{{ avatarFor(item) }}</span>
         <svg v-else-if="item.icon === 'plus'" class="ic sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>

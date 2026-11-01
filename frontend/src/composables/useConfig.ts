@@ -103,11 +103,11 @@ async function loadConfig() {
   }
 }
 
-async function persistConfig() {
+async function persistConfig(keepalive = false) {
   if (!loaded.value) return
-  saving.value = true
+  saving.value = keepalive ? saving.value : true
   try {
-    await api.put<Config>('/api/config', { ...config })
+    await api.put<Config>('/api/config', { ...config }, { keepalive, timeoutMs: keepalive ? 5000 : 30000 })
     savedAt.value = Date.now()
     persistedSignature = signature.value
   } catch (error) {
@@ -129,12 +129,20 @@ function scheduleSave() {
 
 watch(signature, scheduleSave)
 
-function flushSave() {
+function flushSave(options: { keepalive?: boolean } = {}) {
   if (saveTimer !== null) {
     window.clearTimeout(saveTimer)
     saveTimer = null
-    void persistConfig()
+    void persistConfig(options.keepalive === true)
   }
+}
+
+// A 650 ms debounce plus "close the tab" is a data-loss window: the change was
+// shown as applied but never reached the server. Internet Explorer and modern
+// browsers both fire `pagehide` on unload, and `keepalive` lets the request
+// outlive the page.
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => flushSave({ keepalive: true }))
 }
 
 export function useConfig() {
