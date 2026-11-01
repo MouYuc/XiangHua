@@ -1,0 +1,72 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = [
+    "GPT-SoVITS",
+    "third_party",
+    ".venv",
+    "frontend",
+    "TEMP",
+    "output",
+    ".guangpu_webui",
+]
+
+[tool.ruff.lint]
+# Deliberately a *fixed* set rather than "everything ruff knows": a moving
+# target turns CI red on a dependency upgrade instead of on a code change.
+select = [
+    "E4",   # import placement
+    "E7",   # real statements in odd places
+    "E9",   # syntax/runtime errors (E9 is the only rule family that catches broken code)
+    "F",    # pyflakes: undefined names, unused imports, redefinitions
+    "I",    # import sorting
+    "UP",   # pyupgrade: dead syntax for the target Python version
+    "B",    # bugbear: likely-bug patterns (mutable defaults, loop closures)
+    "RUF",  # ruff's own correctness rules
+]
+ignore = [
+    "E501",    # line length is the formatter's job
+    "B008",    # FastAPI declares dependencies via call-in-default
+    "RUF001",  # ambiguous unicode — this codebase is full of CJK punctuation
+    "RUF002",
+    "RUF003",
+    "RUF046",  # int() around a value that is already int: noisy, harmless
+    "RUF012",  # mutable class attributes on dataclasses are intentional here
+    "B905",    # zip(strict=) would change behaviour of existing call sites
+    "SIM105",  # contextlib.suppress is not obviously clearer for one-line guards
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts and tests manipulate sys.path before importing the app, and both use
+# throwaway unpacking/loop variables in assertion scaffolding.
+"backend/tests/**" = ["E402", "B023", "B007", "RUF015", "RUF043", "RUF059"]
+"scripts/**" = ["E402", "E741", "RUF059"]
+"tools/**" = ["E402", "B023", "E741"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+addopts = "-ra --strict-markers"
+# ``--strict-markers`` keeps a typo in a marker from silently skipping a test.
+markers = [
+    "gpu: needs a real CUDA device; skipped on CI",
+    "slow: longer than ~10 s",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:pydantic.*",
+]
+
+[tool.coverage.run]
+# Measure the application, not the tests that exercise it.
+source = ["backend"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+# Baseline first, threshold later: a gate set before anyone knows the real number
+# either blocks every refactor or is trivially satisfied. See docs/REFACTOR_2026-11.md §7.
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

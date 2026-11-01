@@ -3,7 +3,6 @@
 import os
 from pathlib import Path
 
-
 _GPT_MODEL_DIRS = (
     "GPT_weights_v2Pro",
     "GPT_weights_v2ProPlus",

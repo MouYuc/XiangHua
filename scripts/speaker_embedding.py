@@ -33,7 +33,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -68,8 +67,8 @@ def _load_architecture():
     if directory not in sys.path:
         sys.path.insert(0, directory)
 
-    from ERes2NetV2 import ERes2NetV2
     import kaldi as Kaldi
+    from ERes2NetV2 import ERes2NetV2
 
     return ERes2NetV2, Kaldi
 

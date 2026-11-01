@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from knnvc_runtime import (  # noqa: E402
+from knnvc_runtime import (
     DEFAULT_CHUNK_SECONDS,
     DEFAULT_KNNVC_ROOT,
     build_matching_set,

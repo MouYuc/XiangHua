@@ -11,9 +11,9 @@ import io
 import json
 import math
 import os
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-import sys
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -475,7 +475,7 @@ def _install_capture_hooks(tts: Any, state: dict[str, Any]) -> None:
                 return result
 
             infer_globals["sample"] = sample
-            setattr(model, "_codex_eos_hook_state", hook_state)
+            model._codex_eos_hook_state = hook_state
     if hook_state is not None:
         hook_state["state"] = state
 
@@ -534,6 +534,7 @@ def run_worker(
     if project_tools_paths is not None and engine_tools_path not in project_tools_paths:
         project_tools_paths.append(engine_tools_path)
     from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config
+
     from backend.services.core import expected_segment_duration
 
     with log_path.open("w", encoding="utf-8") as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):

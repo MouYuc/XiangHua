@@ -1,4 +1,5 @@
-import json, urllib.request
+import json
+import urllib.request
 
 cfg = json.load(urllib.request.urlopen("http://127.0.0.1:7860/config", timeout=10))
 by_id = {c["id"]: c for c in cfg["components"]}
@@ -46,6 +47,7 @@ if start < 0:
     start = text.find("batch")
 # print the batch page column subtree: find the vis=False column right after synth
 import re
+
 # find all top-level (depth-2, i.e. "  [id] column") page columns with their line numbers
 segments = []
 for m in re.finditer(r"^  \[\d+\] column vis=(True|False)", text, re.M):

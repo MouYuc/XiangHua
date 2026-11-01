@@ -1,4 +1,6 @@
-# Test-only dependencies for the repository's mixed unittest/pytest suite.
-# Install into the same environment used to run backend tests:
+# Development/test-only dependencies. Install into the same environment used to
+# run the backend suite:
 #   uv pip install --python .venv\Scripts\python.exe -r requirements-dev.txt
 pytest>=8,<10
+pytest-cov>=5,<8
+ruff>=0.16,<0.17

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """用 faster-whisper 对切片做识别，生成 GPT-SoVITS 训练标注。
 
 用法：

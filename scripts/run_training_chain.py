@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.run_dataset_prep import install_gradio_shim  # noqa: E402
+from scripts.run_dataset_prep import install_gradio_shim
 
 STAGES: dict[str, list[str]] = {
     "s1": ["GPT_SoVITS/s1_train.py", "--config_file", "TEMP/tmp_s1.yaml"],

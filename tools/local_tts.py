@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 广普本地配音工具（基于 GPT-SoVITS v2Pro）
 
@@ -26,14 +25,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.services.core import SynthesisBackend
+from backend.services.pronunciation import build_pronunciation_plan
 from tools.env import resolve_default_environment_root
 from tools.rules import safe_name
-from backend.services.pronunciation import build_pronunciation_plan
 
 GPT_SOVITS_ROOT = os.path.abspath(resolve_default_environment_root(Path(__file__).resolve().parents[1]))
 
 import soundfile as sf
-
 
 # ================= 配置区（可用环境变量覆盖） =================
 GPT_MODEL = os.environ.get("GPT_MODEL", os.path.join(GPT_SOVITS_ROOT, "GPT_SoVITS", "pretrained_models", "s1v3.ckpt"))

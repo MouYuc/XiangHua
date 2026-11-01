@@ -6,7 +6,6 @@ import argparse
 import dataclasses
 from pathlib import Path
 
-
 EXPLICIT_PREPROCESSOR = """    def preprocess_segments(self, segments, version="v2"):
         phones_list, bert_list, norm_text_list = [], [], []
         boundaries, phone_offset = [], 0

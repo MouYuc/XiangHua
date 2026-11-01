@@ -6,7 +6,6 @@ import argparse
 import dataclasses
 from pathlib import Path
 
-
 T2S_CALLBACK_READ = 'semantic_token_callback = kwargs.get("semantic_token_callback")'
 T2S_TOKEN_EMIT = "semantic_token_callback(y.shape[1] - prefix_len)"
 T2S_NAIVE_EMIT = """            if idx == 1499:

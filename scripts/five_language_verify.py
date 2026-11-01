@@ -147,7 +147,7 @@ class LanguageIdentifier:
         return {"raw": raw, "text": cleaned, "language": detected}
 
 
-def cross_language_drift(embeddings: dict[str, "object"], cosine) -> dict:
+def cross_language_drift(embeddings: dict[str, object], cosine) -> dict:
     """Pairwise SECS between the five outputs, and the spread the playbook caps.
 
     One reference recording defines the voice, so the five languages should land close
@@ -220,7 +220,7 @@ def synthesize(cfg: dict, text: str, output_dir: Path, label: str) -> dict:
     }
 
 
-def validate_lid(model_dir: str | Path, identifier: "LanguageIdentifier") -> dict:
+def validate_lid(model_dir: str | Path, identifier: LanguageIdentifier) -> dict:
     """Check the language identifier against the model's own per-language examples.
 
     SenseVoiceSmall ships ``zh.mp3``, ``yue.mp3``, ``en.mp3``, ``ja.mp3`` and ``ko.mp3``

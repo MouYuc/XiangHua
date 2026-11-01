@@ -60,10 +60,10 @@ def install_gradio_shim() -> None:
     module.__version__ = SHIM_VERSION
     module.__doc__ = "Minimal stand-in: see scripts/run_dataset_prep.py for the rationale."
 
-    def Warning(message, *args, **kwargs):  # noqa: N802 - matches Gradio's API name
+    def Warning(message, *args, **kwargs):
         print(f"[gradio-shim] Warning: {message}", flush=True)
 
-    def Info(message, *args, **kwargs):  # noqa: N802
+    def Info(message, *args, **kwargs):
         print(f"[gradio-shim] Info: {message}", flush=True)
 
     module.Warning = Warning

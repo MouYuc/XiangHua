@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """广普训练后端（WebUI「训练」页专用）。
 
 把 GPT-SoVITS 训练链路（切片 / Whisper 识别 / 人工校对 / 特征提取 / s1+s2 训练）
@@ -439,7 +438,7 @@ def start_job(step, title, cmds, pre=None, progress_meta=None):
                                         break
                                     f.write(chunk)
                                     f.flush()
-                                    sys.stdout.buffer.write("  [训练] ".encode("utf-8") + chunk)
+                                    sys.stdout.buffer.write("  [训练] ".encode() + chunk)
                                     sys.stdout.buffer.flush()
                                     pending += chunk
                                     parts = re.split(br"[\r\n]", pending)
@@ -545,7 +544,7 @@ def start_deps_job(pkgs):
                             break
                         f.write(line)
                         f.flush()
-                        sys.stdout.buffer.write("  [依赖] ".encode("utf-8") + line)
+                        sys.stdout.buffer.write("  [依赖] ".encode() + line)
                         sys.stdout.buffer.flush()
                 except Exception:
                     pass
@@ -842,7 +841,6 @@ def missing_deps():
 
 def train_env_rows(cfg):
     """训练页环境检查行：[{name, status(ok|bad|warn), detail, fix}...]"""
-    import importlib.util
 
     rows = []
 

@@ -31,7 +31,6 @@ if str(REPO_ROOT) not in sys.path:
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from backend.services import core
 from tts_regression import (
     SWAP_BASE_TEXT,
     SWAP_LEVELS,
@@ -39,6 +38,8 @@ from tts_regression import (
     SecsEvaluator,
     run_swap_suite,
 )
+
+from backend.services import core
 
 # Re-exported for the contract tests and older callers; the source of truth is
 # tts_regression, where the fixed bench runs the same suite.

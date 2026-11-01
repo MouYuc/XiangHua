@@ -37,8 +37,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from tts_regression import REGRESSION_SEED, SWAP_BASE_TEXT, CerEvaluator  # noqa: E402
-
+from tts_regression import REGRESSION_SEED, SWAP_BASE_TEXT, CerEvaluator
 
 DEFAULT_OUT_DIR = REPO_ROOT / "output" / "channel_verify"
 
@@ -90,8 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    from backend.services import core, voice_ingest
     from speaker_embedding import SpeakerEmbedder, cosine_similarity
+
+    from backend.services import core, voice_ingest
 
     refs: list[dict[str, Any]] = []
     for item in inputs:

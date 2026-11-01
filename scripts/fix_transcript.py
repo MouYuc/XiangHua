@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """把 whisper 识别结果人工修正为最终训练标注。
 
 whisper 对广普/粤语词识别常有错字，训练前务必校对。
@@ -9,7 +8,6 @@ whisper 对广普/粤语词识别常有错字，训练前务必校对。
 """
 
 import argparse
-import os
 
 
 def main():

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """广普文本转换兼容入口（CLI 与 WebUI 共用）。
 
 真正的档位规则位于 ``backend.services.pronunciation``。本模块保留旧的

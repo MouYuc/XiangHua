@@ -33,12 +33,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 import numpy as np
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -92,7 +92,7 @@ def validate_fixture(data: dict[str, Any]) -> list[str]:
         errors.append(f"groups 必须严格为 {list(GROUPS)}")
     cases = data.get("cases")
     if not isinstance(cases, list):
-        return errors + ["cases 必须是数组"]
+        return [*errors, "cases 必须是数组"]
     if len(cases) != 20:
         errors.append(f"cases 必须固定为 20 条，当前 {len(cases)} 条")
 
