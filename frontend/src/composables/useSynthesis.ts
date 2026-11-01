@@ -247,7 +247,10 @@ async function retry(index: number) {
   retryingIndex.value = index
   job.value = null
   latestRevision = -1
-  generatedLines.value = [item.text]
+  // `generatedLines` is deliberately left alone. It is the key list the view maps
+  // `outputs` against (text + ordinal), and a retry only replaces one slot:
+  // shrinking the keys to the retried line made every other line unmappable and
+  // made the retried line resolve to `outputs[0]` — i.e. the first line's audio.
   stopTracking()
   try {
     const data = await api.post<SynthesisSnapshot>('/api/synthesis', synthesisRequestBody(item.text))

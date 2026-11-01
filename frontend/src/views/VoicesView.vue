@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { activateVoiceCard, api, errorMessage, type VoiceCard } from '@/lib/api'
+import { activateVoiceCard, api, errorMessage, UPLOAD_TIMEOUT_MS, type VoiceCard } from '@/lib/api'
 import {
   asTimbreConvertResult,
   formatTimbreSeconds,
@@ -145,7 +145,9 @@ async function convertUpload(file: File) {
     const body = new FormData()
     body.append('audio', file)
     body.append('topk', String(topk.value))
-    const started = await api.post<{ job_id: string }>('/api/timbre/convert', body)
+    const started = await api.post<{ job_id: string }>('/api/timbre/convert', body, {
+      timeoutMs: UPLOAD_TIMEOUT_MS,
+    })
     pollConvert(started.job_id)
   } catch (error) {
     converting.value = false

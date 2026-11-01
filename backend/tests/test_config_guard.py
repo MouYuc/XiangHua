@@ -88,6 +88,46 @@ class ConfigGuardTests(unittest.TestCase):
             with self.assertRaises(config_guard.ConfigPathError):
                 config_guard.validate_config_update({"gpt_sovits_root": str(root)}, {})
 
+    def test_model_inside_the_configured_engine_root_is_accepted(self) -> None:
+        """Weights trained into an engine tree on another drive must stay usable.
+
+        The docstring promised this allowance from the start, but the code only
+        checked ``allowed_roots``: "填入最新模型" saved a new path and every later
+        synthesis then failed with a 400 until the page was reloaded.
+        """
+        root = self._engine_tree(self.tmp)
+        model = root / "GPT_weights_v2Pro" / "trained-e14.ckpt"
+        model.parent.mkdir(parents=True)
+        model.write_bytes(b"ckpt")
+        with patch.object(path_guard, "allowed_roots", return_value=[REPO_ROOT.resolve()]):
+            config_guard.validate_config_update(
+                {"gpt_model": str(model)}, {"gpt_sovits_root": str(root)}
+            )
+
+    def test_model_outside_both_the_allowlist_and_the_engine_root_is_rejected(self) -> None:
+        root = self._engine_tree(self.tmp)
+        stray = self.tmp / "loose.ckpt"
+        stray.write_bytes(b"ckpt")
+        with patch.object(path_guard, "allowed_roots", return_value=[REPO_ROOT.resolve()]):
+            with self.assertRaises(config_guard.ConfigPathError):
+                config_guard.validate_config_update(
+                    {"gpt_model": str(stray)}, {"gpt_sovits_root": str(root)}
+                )
+
+    def test_switching_the_engine_root_and_the_model_in_one_update_is_accepted(self) -> None:
+        """The model is judged against the root this same payload adopts."""
+        root = self._engine_tree(self.tmp)
+        model = root / "GPT_weights_v2Pro" / "trained-e14.ckpt"
+        model.parent.mkdir(parents=True)
+        model.write_bytes(b"ckpt")
+        with (
+            patch.object(path_guard, "allowed_roots", return_value=[REPO_ROOT.resolve()]),
+            patch.object(config_guard, "_scanned_roots", return_value={str(root.resolve())}),
+        ):
+            config_guard.validate_config_update(
+                {"gpt_sovits_root": str(root), "gpt_model": str(model)}, {}
+            )
+
     def test_empty_and_absent_fields_are_ignored(self) -> None:
         config_guard.validate_config_update({"ref_audio": ""}, {})
         config_guard.validate_config_update({"ref_audio": None}, {})

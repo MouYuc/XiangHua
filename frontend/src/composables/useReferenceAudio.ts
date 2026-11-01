@@ -4,6 +4,7 @@ import {
   errorMessage,
   getReferenceAudioPrepareSnapshot,
   startReferenceAudioPrepare,
+  UPLOAD_TIMEOUT_MS,
   type ReferenceAudioPrepareSnapshot,
 } from '@/lib/api'
 import { referenceQualityFailed, type ReferenceReport } from './referenceAudio'
@@ -79,13 +80,21 @@ const preparePoll = createPolling({
   interval: POLL_MS,
   failLimit: POLL_FAILURE_LIMIT,
   run: async () => {
-    if (!prepareJobId.value) return false
+    const jobId = prepareJobId.value
+    if (!jobId) return false
     if (Date.now() - prepareStartedAt > TIMEOUT_MS) {
       finish()
       toast.error('音色样本准备超时，请换一段更短的录音。')
       return false
     }
-    const job = await getReferenceAudioPrepareSnapshot(prepareJobId.value)
+    const job = await getReferenceAudioPrepareSnapshot(jobId)
+    // The request may outlive the job it was asking about: the user can start a
+    // new upload while this one is in flight, and `createPolling`'s generation
+    // check only runs *after* `run()` returns — so the guard has to be here.
+    // Without it a late `done` from the previous job cleared the new upload's
+    // progress, overwrote `ref_audio` with the old recording and showed a
+    // success toast for work the user had already replaced.
+    if (prepareJobId.value !== jobId) return false
     progress.value = Math.max(0, Math.min(1, Number(job.progress) || 0))
     stage.value = job.stage || '准备中'
     if (job.status === 'done') {
@@ -145,7 +154,11 @@ async function upload(file: File) {
 
   try {
     if (purpose.value !== 'synthesis') {
-      const result = await api.post<{ path: string; ref_text?: string; report: ReferenceReport }>('/api/reference-audio', body)
+      const result = await api.post<{ path: string; ref_text?: string; report: ReferenceReport }>(
+        '/api/reference-audio',
+        body,
+        { timeoutMs: UPLOAD_TIMEOUT_MS },
+      )
       if (currentToken !== token) return
       configStore.config.ref_audio = result.path
       if (result.ref_text) configStore.config.ref_text = result.ref_text

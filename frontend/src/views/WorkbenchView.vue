@@ -45,17 +45,17 @@ const scriptText = computed(() => speech.value.map((line) => line.text).join('\n
 const charCount = computed(() => speech.value.reduce((sum, line) => sum + line.text.length, 0))
 
 /**
- * 把一行台词映射到它对应的输出。
+ * 把一行台词映射到它在 `outputs` 里的下标（-1 表示没有对应输出）。
  *
  * 不能按下标直接对位：新增、合并或删除一行后，`speech` 的位置与后端返回的
  * `outputs` 顺序就错开了，界面会把上一句的音频挂到这一句上。这里用「文本 +
  * 同文本中的序号」作为键，编辑过的行自然找不到输出，于是显示为待生成。
  */
-function outputFor(lineIndex: number): (typeof synthesis.outputs.value)[number] | null {
+function mappedOutputIndex(lineIndex: number): number {
   const position = speech.value.findIndex((line) => line.index === lineIndex)
-  if (position < 0) return null
+  if (position < 0) return -1
   const key = speech.value[position]?.text.trim() ?? ''
-  if (!key) return null
+  if (!key) return -1
   const generated = synthesis.generatedLines.value
   let ordinal = 0
   for (let i = 0; i < position; i += 1) {
@@ -64,10 +64,15 @@ function outputFor(lineIndex: number): (typeof synthesis.outputs.value)[number] 
   let seen = 0
   for (let i = 0; i < generated.length; i += 1) {
     if (generated[i] !== key) continue
-    if (seen === ordinal) return synthesis.outputs.value[i] ?? null
+    if (seen === ordinal) return i
     seen += 1
   }
-  return null
+  return -1
+}
+
+function outputFor(lineIndex: number): (typeof synthesis.outputs.value)[number] | null {
+  const index = mappedOutputIndex(lineIndex)
+  return index >= 0 ? synthesis.outputs.value[index] ?? null : null
 }
 
 type LineState = 'idle' | 'done' | 'warn' | 'failed' | 'generating' | 'queued'
@@ -133,7 +138,13 @@ async function exportEpisode() {
 async function retryLine(lineIndex: number) {
   const line = lines.value[lineIndex]
   if (!line?.trim()) return
-  await synthesis.retry(speech.value.findIndex((item) => item.index === lineIndex))
+  // `retry` replaces one slot of `outputs`, so it takes an *output* index. The
+  // speech position stops being the same number as soon as a line was inserted,
+  // merged or deleted — passing it made retry write the new take into the wrong
+  // slot (and therefore onto the wrong line).
+  const outputIndex = mappedOutputIndex(lineIndex)
+  if (outputIndex < 0) return
+  await synthesis.retry(outputIndex)
 }
 
 function setLinesFromText(text: string) {

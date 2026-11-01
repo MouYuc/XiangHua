@@ -8,14 +8,18 @@ filesystem oracle that reads arbitrary audio back out — and could set
 ``gpt_model``/``gpt_sovits_root``, which are handed to ``torch.load`` and
 ``sys.path``/``import`` respectively.
 
-Two deliberate escapes keep legitimate setups working:
+Three deliberate escapes keep legitimate setups working:
 
 * a value that is **unchanged** from the stored configuration is not re-checked,
   so the UI's autosave (which round-trips the whole config object) never fails
   on a root that was legitimately adopted at startup;
 * an engine root **outside** the repository is accepted when it was found by the
   environment scanner, because that is exactly how a user installs GPT-SoVITS on
-  another drive.
+  another drive;
+* a model / reference file is accepted when it lives **inside** the configured
+  engine root (which is itself validated above), because that is where trained
+  weights and sliced training audio end up — including for an engine tree on
+  another drive, and for ``default_config()``'s own reference path.
 
 Everything else has to live inside ``path_guard.allowed_roots()``.
 """
@@ -60,7 +64,18 @@ def _scanned_roots() -> set[str]:
         return set()
 
 
-def _check_file(field: str, value: str) -> None:
+def _under_root(value: Path, root: str) -> bool:
+    """True when ``value`` lives inside ``root``; a blank/unresolvable root is False."""
+    if not root:
+        return False
+    try:
+        base = Path(root).expanduser().resolve()
+    except OSError:  # pragma: no cover - unreachable on a normal filesystem
+        return False
+    return value == base or value.is_relative_to(base)
+
+
+def _check_file(field: str, value: str, *, engine_root: str = "") -> None:
     candidate = Path(value).expanduser()
     try:
         resolved = candidate.resolve(strict=True)
@@ -68,11 +83,14 @@ def _check_file(field: str, value: str) -> None:
         raise ConfigPathError(f"{field} 指向的文件不存在：{candidate}") from exc
     if not resolved.is_file():
         raise ConfigPathError(f"{field} 不是文件：{candidate}")
-    roots = _allowed_roots()
-    if _inside(resolved, roots):
+    if _inside(resolved, _allowed_roots()):
         return
-    # A model file is allowed anywhere under the configured engine root; the
-    # root itself is validated separately.
+    # A model file is allowed anywhere under the configured engine root: that root
+    # is itself validated by ``_check_directory``, and weights trained into a tree
+    # on another drive legitimately live there — rejecting them made
+    # "填写最新模型" succeed and then every later synthesis fail.
+    if _under_root(resolved, engine_root):
+        return
     raise ConfigPathError(
         f"{field} 超出允许范围：{candidate}。请把该文件所在目录加入 "
         "XIANGHUA_ALLOWED_PATH_ROOTS，或把模型放进 GPT-SoVITS 目录内。"
@@ -106,16 +124,9 @@ def validate_config_update(payload: dict[str, Any], current: dict[str, Any]) -> 
     identical to ``current`` is skipped: re-saving an already-adopted path is not
     a new permission.
     """
-    for field in FILE_FIELDS:
-        if field not in payload:
-            continue
-        value = payload[field]
-        if value is None or not str(value).strip():
-            continue
-        if current.get(field) == value:
-            continue
-        _check_file(field, str(value))
-
+    # Directories first: when one payload switches the engine root *and* points a
+    # model at it, the model must be judged against the root this payload adopts —
+    # which has just been validated here — not against the old one.
     for field in DIRECTORY_FIELDS:
         if field not in payload:
             continue
@@ -125,3 +136,14 @@ def validate_config_update(payload: dict[str, Any], current: dict[str, Any]) -> 
         if current.get(field) == value:
             continue
         _check_directory(field, str(value))
+
+    engine_root = str(payload.get("gpt_sovits_root") or current.get("gpt_sovits_root") or "")
+    for field in FILE_FIELDS:
+        if field not in payload:
+            continue
+        value = payload[field]
+        if value is None or not str(value).strip():
+            continue
+        if current.get(field) == value:
+            continue
+        _check_file(field, str(value), engine_root=engine_root)

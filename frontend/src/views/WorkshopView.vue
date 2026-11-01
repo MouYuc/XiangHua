@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api } from '@/lib/api'
+import { api, UPLOAD_TIMEOUT_MS } from '@/lib/api'
 import { usePage } from '@/composables/usePage'
 import { useTraining } from '@/composables/useTraining'
 import { useToast } from '@/composables/useToast'
@@ -100,7 +100,9 @@ async function onFile(event: Event) {
     body.append('language', uploadLanguage.value)
     body.append('rights_declared', 'true')
     body.append('transcribe', 'true')
-    const data = await api.post<{ message: string; session: MediaSession }>('/api/media/sessions', body)
+    const data = await api.post<{ message: string; session: MediaSession }>('/api/media/sessions', body, {
+      timeoutMs: UPLOAD_TIMEOUT_MS,
+    })
     session.value = data.session
     startPolling(data.session.session_id)
   } catch (error) {

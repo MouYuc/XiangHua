@@ -12,6 +12,7 @@ import {
   type TranscriptRow,
 } from '@/lib/api'
 import { createPolling } from './usePolling'
+import { useConfig } from './useConfig'
 import { useToast } from './useToast'
 
 export const TRAINING_STEP_LABELS: Record<string, string> = {
@@ -30,6 +31,7 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 const toast = useToast()
+const configStore = useConfig()
 
 const training = ref<TrainingState>({ steps: {} })
 const stats = ref<Record<string, number | string | null>>({})
@@ -207,9 +209,14 @@ async function refresh() {
 async function runAction(path: string, payload: object = {}): Promise<boolean> {
   actionBusy.value = true
   try {
-    const result = await api.post<JobResult>(path, payload)
+    const result = await api.post<JobResult & { config?: Record<string, unknown> }>(path, payload)
     if (result.message) toast.success(result.message)
     if (result.log?.text) logText.value = result.log.text
+    // 后端在「填入最新模型」里直接改了 config。前端手里的 Config 还是旧的，
+    // 而合成请求会把它整份带回去：旧路径若已不存在、或落在允许范围之外，
+    // 之后每次生成都会被 config_guard 拒绝（400），直到刷新页面才恢复。
+    // 服务器既然把 config 回传了，就以它为准重新读一次。
+    if (result.config) await configStore.loadConfig()
     await refresh()
     return true
   } catch (error) {
@@ -257,8 +264,12 @@ async function saveTranscript() {
 
 async function selectModels() {
   try {
-    const data = await api.post<{ message: string }>('/api/training/models/select')
+    const data = await api.post<{ message: string; config?: Record<string, unknown> }>(
+      '/api/training/models/select',
+    )
     toast.success(data.message)
+    // 同 runAction：后端改了模型路径，前端必须同步，否则下一次合成会用旧路径。
+    if (data.config) await configStore.loadConfig()
     await refresh()
   } catch (error) {
     toast.error(error instanceof Error ? error.message : String(error))

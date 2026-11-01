@@ -158,6 +158,17 @@ export class ApiError extends Error {
 /** Abort a request that the backend never answers, so spinners can end. */
 const DEFAULT_TIMEOUT_MS = 30_000
 
+/**
+ * Uploading a recording or a video is bounded by the user's disk and by how long
+ * they are willing to wait — not by the API's response time.
+ *
+ * The 30 s default is right for a JSON round trip and wrong for a large file:
+ * on a slow disk the abort would fire mid-upload, which is a regression against
+ * the pre-timeout behaviour where the request could take as long as it needed.
+ * Every endpoint that streams a file body uses this instead.
+ */
+export const UPLOAD_TIMEOUT_MS = 10 * 60_000
+
 export type RequestOptions = {
   method?: string
   body?: BodyInit | null
@@ -221,7 +232,7 @@ export const startReferenceAudioPrepare = (body: FormData) =>
     method: 'POST',
     body,
     // Uploading a long recording is streamed to disk before the job starts.
-    timeoutMs: 10 * 60_000,
+    timeoutMs: UPLOAD_TIMEOUT_MS,
   })
 
 export const getReferenceAudioPrepareSnapshot = (jobId: string) =>
