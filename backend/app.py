@@ -318,6 +318,22 @@ def _error_code(status: int) -> str:
     return _ERROR_CODES.get(int(status), f"HTTP_{int(status)}")
 
 
+def _upload_filename(file: UploadFile, fallback: str = "upload") -> str:
+    """Recover a UTF-8 multipart filename that Starlette decoded as latin-1.
+
+    Starlette falls back to latin-1 whenever the part carries no explicit charset,
+    so a Chinese name sent by curl/browser shows up as ``ºúÌÒ...`` in session
+    metadata and on disk. Round-tripping the string through latin-1 recovers the
+    original bytes; a name that is already real UTF-8 contains characters outside
+    latin-1 and is returned unchanged instead of being mangled.
+    """
+    raw = file.filename or fallback
+    try:
+        return raw.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return raw
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="XiangHua API", version="1.0.0")
     app.add_middleware(
@@ -464,7 +480,7 @@ def create_app() -> FastAPI:
         asset and a later timbre adapter can use the full recording.
         """
         try:
-            path = core.save_reference_audio(audio.filename or "", audio.file)
+            path = core.save_reference_audio(_upload_filename(audio, ""), audio.file)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -528,7 +544,7 @@ def create_app() -> FastAPI:
                 detail="该接口只用于自动准备合成参考音；仅上传检查请使用 POST /api/reference-audio。",
             )
         try:
-            path = core.save_reference_audio(audio.filename or "", audio.file)
+            path = core.save_reference_audio(_upload_filename(audio, ""), audio.file)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -872,7 +888,7 @@ def create_app() -> FastAPI:
         if not (Path(root) / "GPT_SoVITS").is_dir():
             raise HTTPException(status_code=400, detail="GPT-SoVITS 根目录不可用。")
         try:
-            message = core.apply_pronunciation_patch(root, patch.filename or "", patch.file)
+            message = core.apply_pronunciation_patch(root, _upload_filename(patch, ""), patch.file)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -985,7 +1001,7 @@ def create_app() -> FastAPI:
         if topk < 1:
             raise HTTPException(status_code=400, detail="topk 必须 >= 1。")
         try:
-            source = timbre.save_source(audio.filename or "source.wav", audio.file)
+            source = timbre.save_source(_upload_filename(audio, "source.wav"), audio.file)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -1104,7 +1120,7 @@ def create_app() -> FastAPI:
         root = _root_or_400(config)
         if min_length < min_gap or min_gap < 10 or keep_silence < 10:
             raise HTTPException(status_code=400, detail="参数不满足约束：最短段长 >= 最短间隔 >= 10，保留静音 >= 10。")
-        filename = Path(recording.filename or "recording.wav").name
+        filename = Path(_upload_filename(recording, "recording.wav")).name
         raw = root / "custom_data" / "raw"
         raw.mkdir(parents=True, exist_ok=True)
         destination = raw / filename
@@ -1274,12 +1290,12 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         service = _media_service()
         session = service.create_session(
-            name or Path(recording.filename or "media").stem,
+            name or Path(_upload_filename(recording, "media")).stem,
             language=language,
             rights_declared=rights_declared,
             rights_note=rights_note,
         )
-        session = service.ingest_file(session["session_id"], recording.filename or "media", recording.file)
+        session = service.ingest_file(session["session_id"], _upload_filename(recording, "media"), recording.file)
         service.start_analysis(session["session_id"], speaker_count=speaker_count, transcribe=transcribe)
         return {
             "message": "媒体已上传，正在分析。",

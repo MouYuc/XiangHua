@@ -18,7 +18,6 @@ streaming platforms and does not attempt to clone an unlicensed voice.
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import os
@@ -36,7 +35,7 @@ from typing import Any, BinaryIO, Callable
 import numpy as np
 import soundfile as sf
 
-from backend.services import media_diarization, reference_audio
+from backend.services import media_diarization, reference_audio, whisper_cache
 from backend.services.gpu_arbiter import GPU_ARBITER
 
 MEDIA_ROOT_REL = Path("custom_data") / "media"
@@ -210,21 +209,13 @@ def extract_audio(source: Path, destination: Path, rate: int) -> None:
         raise MediaIngestError("音轨提取失败：输出文件为空。")
 
 
-@functools.lru_cache(maxsize=2)
 def _load_whisper(model_name: str):
-    from faster_whisper import WhisperModel
-    from scripts.run_whisper import resolve_local_model
+    """Patchable seam; the model itself is cached process-wide in ``whisper_cache``.
 
-    local = resolve_local_model(model_name)
-    model_ref = str(local) if local is not None else model_name
-    try:
-        import torch
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
-        device = "cpu"
-    compute_type = "float16" if device == "cuda" else "int8"
-    return WhisperModel(model_ref, device=device, compute_type=compute_type)
+    A private ``lru_cache`` here duplicated the large-v3 model whenever reference
+    preparation had already loaded it (see ``whisper_cache`` module docstring).
+    """
+    return whisper_cache.load_whisper(model_name)
 
 
 class MediaIngestService:
@@ -772,17 +763,18 @@ class MediaIngestService:
         for segment in segments:
             path = self._absolute(session_id, segment["path"])
             try:
-                decoded, _info = whisper.transcribe(
-                    str(path),
-                    beam_size=1,
-                    vad_filter=False,
+                raw_text, _info = whisper_cache.transcribe(
+                    path,
+                    model=model,
                     language=whisper_language,
+                    beam_size=1,
+                    loader=lambda _name: whisper,
                 )
-                text = "".join(item.text for item in decoded)
+                text = normalize_transcript(raw_text, language=language)
                 # Normalise against the session language, not the whisper hint:
                 # Cantonese keeps its traditional characters ("係" is not "系"),
                 # so the main line passes "yue" through unchanged as well.
-                segment["text"] = normalize_transcript(text, language=language)
+                segment["text"] = text
             except Exception as exc:
                 segment["text_error"] = str(exc)
 

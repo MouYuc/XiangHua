@@ -357,3 +357,22 @@
 - **命名建档缺口已关闭（2026-10-25 追记）**：发现后端本就有版本化声线卡接口（`GET/POST /voice-cards`、`/activate`、`/versions`，服务层 `voice_assets.VoiceCardStore`），前端已直接接入：建档向导完成后 `POST /voice-cards` 快照当前配置成卡，声音库展示卡片（版本号/状态/参考音可用性），「用于合成」走 `/activate` 写回配置。曾短暂实现的 POST /voice/profiles 方案已撤销（与声线卡重复）。工作坊校对仍用训练工作区转写（/api/training/transcript）。另：向导质检未达标改为「警告不拦截」（外部并行改动，保留）；7860 预览由用户自起的 python 进程（PID 1508）服务。
 - **验证**：前端 49 项测试全过、`npm run build` 通过（170 kB JS / 32 kB CSS）；真实后端 7860 逐页截图核对（1440/1024/390，390 经 DOM 实测无横向溢出）；声音库/记录/工作台均吃到真实数据。
 - 未提交、未推送；设计稿三份在 `design/`，供回顾。后端 7860 预览进程由会话启动，结束时应按用户要求处理。
+
+---
+
+## 12. 2026-11-01 端到端验收（胡桃视频）与四处缺陷修复
+
+**验收**：33.7s 视频 → 媒体入库（1 说话人 / 10 切片 / 25.6s，Whisper 全量转写）→ 9 句少样本微调（s1 15 + s2 12，4.5 分钟）→ 46 行《光阴之外》朗读（245.9s，读回 CER 中位 3.85%，SECS 0.9195）。现场记录与产物在 `TEMP/acceptance_hutao/`（报告 `ACCEPTANCE_REPORT.md`、`full_novel.wav`、`novel.srt`、`report.json`、`dataset_snapshot/`）。
+
+**当轮不改代码**，因此暴露了四处真实缺陷，随后单独一轮修复：
+
+1. `tools/train.py: cmd_feat` 把 `GPT_SoVITS/prepare_datasets/`（目录）当脚本传给 Python → `/training/features` 必然 `can't find '__main__' module`。改为按脚本拼路径（`{prepare_dir}/{script}`）。
+2. `cmd_train` 返回 `_ensure_s2_logs` 本体（需要 `root`），而 `start_job` 以 `pre()` 调用 → `/training/run` 立即 `[准备失败]`。改为 `partial(_ensure_s2_logs, root)`。
+3. **API 路径缺 Gradio shim**：修好 (1) 后子进程立刻死在 `tools/my_utils.py → import gradio`。新增 `tools/train.py:_child_env()`（复用 `scripts/run_dataset_prep.ensure_shim_boot()` 生成的 sitecustomize + PYTHONPATH），特征提取与 s1/s2 训练都走它；`run_training_chain.ensure_boot_module()` 改为委托同一函数，CLI 与 API 不再漂移。
+4. **参考音准备挂死（根因已确认）**：`media_ingest` 与 `voice_ingest` 各有一个 `lru_cache` 的 `_load_whisper`，媒体分析先加载 large-v3 后，`/reference-audio/prepare` 又在进程内加载**第二份**，8GB 卡被推满（实测 7.9GB / 98% 利用率）→ Windows 共享内存抖动，6.8s 音频「语音转写」卡 9 分钟。新增 `backend/services/whisper_cache.py`（进程级单实例 + `TRANSCRIBE_LOCK` 串行解码），两个模块的 `_load_whisper` 变成薄委托保留测试 seam。修复后同一序列：分析 15s、准备 **4.2s**，峰值显存 6.8GB（只多 96MB）。
+5. **中文上传文件名乱码**：Starlette 用 latin-1 解 multipart filename，`胡桃.mp4` 变 `ºúÌÒ.mp4`，会话名/落盘名都受影响。新增 `backend/app._upload_filename()`（latin-1→utf-8 回转），用于参考音、训练切片、媒体入库、音色源、发音补丁五处。修后媒体会话的 `source/` 已落正确中文名。
+6. **单字行读回误伤**：`噗！`（0.36s）被 SenseVoice 读回判 CER 200%，三次 take 全坏、还被标 `suspiciously_short`。`core.take_eligible` 增加「可读字数 ≥2」门槛，`_short_output_floor(text)` 对单字行只保留塌缩下限（0.15s）。
+
+**验证**：`backend/tests/test_acceptance_fixes.py`（12 项）覆盖上述命令拼装、pre 零参、文件名回转、单字行判定；真实 API 复跑 特征提取（四步全 0 退出，dataset 落盘）与 `/training/run`（配置生成 → s1 → s2 `training done`，epochs=1 时按 `save_every=2` 不落盘属预期）。全量后端套件见本轮结果。
+
+**注意**：`_guangpu_webui` 配置与 `custom_data` 在验收后已还原；胡桃素材为未授权商业游戏语音，声线卡 `vc_20261101_150126_484db8` 仅本地诊断留档。

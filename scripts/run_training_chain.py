@@ -26,8 +26,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.run_dataset_prep import install_gradio_shim  # noqa: E402
 
-BOOT_DIR = Path(__file__).resolve().parent / "_shim_boot"
-
 STAGES: dict[str, list[str]] = {
     "s1": ["GPT_SoVITS/s1_train.py", "--config_file", "TEMP/tmp_s1.yaml"],
     "s2": ["GPT_SoVITS/s2_train.py", "--config", "TEMP/tmp_s2.json"],
@@ -35,17 +33,14 @@ STAGES: dict[str, list[str]] = {
 
 
 def ensure_boot_module() -> Path:
-    """Write (or refresh) the ``sitecustomize`` that installs the shim in children."""
-    BOOT_DIR.mkdir(parents=True, exist_ok=True)
-    (BOOT_DIR / "sitecustomize.py").write_text(
-        "try:\n"
-        "    from scripts.run_dataset_prep import install_gradio_shim\n"
-        "    install_gradio_shim()\n"
-        "except Exception as exc:  # pragma: no cover - diagnostics only\n"
-        "    print(f'[gradio-shim] failed: {exc}')\n",
-        encoding="utf-8",
-    )
-    return BOOT_DIR
+    """Write (or refresh) the ``sitecustomize`` that installs the shim in children.
+
+    Delegates to ``run_dataset_prep.ensure_shim_boot`` so the CLI and the API path
+    (``tools/train.py``) generate the identical module.
+    """
+    from scripts.run_dataset_prep import ensure_shim_boot
+
+    return ensure_shim_boot()
 
 
 def main() -> int:

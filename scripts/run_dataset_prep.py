@@ -105,19 +105,19 @@ STEPS: dict[str, tuple[str, dict[str, str]]] = {
 STEP_ORDER = ["text", "hubert", "sv", "semantic"]
 
 
-def run_step(script: str, extra: dict[str, str], root: Path, exp: str, corrected_rel: str) -> int:
-    """Run one preparation script as a child process, with the shim already active."""
-    environment = dict(os.environ)
-    environment.update(_dataset_config(root, exp, corrected_rel))
-    environment.update(extra)
-    environment["PYTHONIOENCODING"] = "utf-8"
-    # The child is a fresh interpreter. A ``sitecustomize`` module on PYTHONPATH is
-    # imported automatically at start-up, which is the only way to inject the shim into a
-    # subprocess without editing the vendored file. It is generated here so the shim
-    # cannot drift from this module.
-    boot_dir = REPO_ROOT / "scripts" / "_shim_boot"
-    boot_dir.mkdir(exist_ok=True)
-    (boot_dir / "sitecustomize.py").write_text(
+SHIM_BOOT_DIR = REPO_ROOT / "scripts" / "_shim_boot"
+
+
+def ensure_shim_boot() -> Path:
+    """Write the ``sitecustomize`` that installs the Gradio stub in child interpreters.
+
+    A child interpreter imports ``sitecustomize`` automatically, which is the only way
+    to inject the shim into a subprocess without editing the vendored tree. Shared by
+    this CLI and ``tools/train.py`` (the API path runs the same scripts), so the two
+    entry points cannot drift apart.
+    """
+    SHIM_BOOT_DIR.mkdir(parents=True, exist_ok=True)
+    (SHIM_BOOT_DIR / "sitecustomize.py").write_text(
         "try:\n"
         "    from scripts.run_dataset_prep import install_gradio_shim\n"
         "    install_gradio_shim()\n"
@@ -125,6 +125,16 @@ def run_step(script: str, extra: dict[str, str], root: Path, exp: str, corrected
         "    print(f'[gradio-shim] failed: {exc}')\n",
         encoding="utf-8",
     )
+    return SHIM_BOOT_DIR
+
+
+def run_step(script: str, extra: dict[str, str], root: Path, exp: str, corrected_rel: str) -> int:
+    """Run one preparation script as a child process, with the shim already active."""
+    environment = dict(os.environ)
+    environment.update(_dataset_config(root, exp, corrected_rel))
+    environment.update(extra)
+    environment["PYTHONIOENCODING"] = "utf-8"
+    boot_dir = ensure_shim_boot()
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(REPO_ROOT), str(boot_dir), environment.get("PYTHONPATH", "")]
     ).strip(os.pathsep)

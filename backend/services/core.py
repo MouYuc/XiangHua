@@ -66,6 +66,26 @@ _ACCEPTABLE_SEGMENT_DURATION_RATIO = 0.80
 SHORT_OUTPUT_RATIO = 0.25
 PRONUNCIATION_MANIFEST_SCHEMA_VERSION = 1
 PRONUNCIATION_MANIFEST_FILENAME = "pronunciation.json"
+
+
+def _short_output_floor(expected_seconds: float, text: str) -> float:
+    """Duration below which a take counts as "not really synthesised".
+
+    Normal lines keep the historical 0.6 s floor. A one-character line has no
+    usable duration estimate (the estimator floors every line at 0.55 s), so it
+    only needs to clear a collapse floor: measured 「噗！」 is a correct 0.36 s
+    that used to be flagged, while a collapsed take stays around 0.05 s.
+    """
+    if _judgeable_char_count(text) < _TAKE_SELECTION_MIN_JUDGE_CHARS:
+        return max(0.15, expected_seconds * SHORT_OUTPUT_RATIO)
+    return max(0.6, expected_seconds * SHORT_OUTPUT_RATIO)
+
+
+def _judgeable_char_count(text: str) -> int:
+    """Characters a readback CER can actually score (letters/CJK digits, no punctuation)."""
+    return sum(1 for char in text if char.isalnum())
+
+
 # --- 读回自选 take（零样本路线的可靠性杠杆）--------------------------------
 # 时长检查救不了"时长正常但吞字/读错"的坏 take（实测 clear_02：2.30s 对预期
 # 2.16s，结尾两个字没读出来）。这里用本地 SenseVoice 读回做灾难检测，超过阈值
@@ -75,6 +95,9 @@ PRONUNCIATION_MANIFEST_FILENAME = "pronunciation.json"
 _TAKE_SELECTION_CER_THRESHOLD = 0.15
 _TAKE_SELECTION_MAX_TAKES = 3
 _TAKE_SEED_STRIDE = 7 * 104_729
+# 读回 CER 对单字/拟声词没有区分力：实测「噗！」三次 take 都是 200%，只是白白
+# 多合成两次。字数不足的行直接交首 take，读回不参与判定。
+_TAKE_SELECTION_MIN_JUDGE_CHARS = 2
 
 
 class _ReadbackJudge:
@@ -1388,6 +1411,7 @@ def _synthesize_lines_locked(
                 bool(cfg.get("take_selection", True))
                 and not line_is_explicit_mixed
                 and str(cfg.get("text_lang") or "zh") == "zh"
+                and _judgeable_char_count(rendered or line) >= _TAKE_SELECTION_MIN_JUDGE_CHARS
             )
             base_line_seed = (
                 int(cfg["seed"])
@@ -1415,7 +1439,7 @@ def _synthesize_lines_locked(
                 expected_seconds = expected_segment_duration(
                     rendered or line, "zh", float(cfg.get("speed", 1))
                 )
-                short_take = produced_seconds < max(0.6, expected_seconds * SHORT_OUTPUT_RATIO)
+                short_take = produced_seconds < _short_output_floor(expected_seconds, rendered or line)
                 take_cer: float | None = None
                 if take_eligible:
                     destination.mkdir(parents=True, exist_ok=True)
@@ -1469,7 +1493,7 @@ def _synthesize_lines_locked(
             produced_seconds = len(np.asarray(audio)) / float(sample_rate or 1)
             expected_seconds = expected_segment_duration(rendered or line, "zh", float(cfg.get("speed", 1)))
             suspiciously_short = bool(
-                produced_seconds < max(0.6, expected_seconds * SHORT_OUTPUT_RATIO)
+                produced_seconds < _short_output_floor(expected_seconds, rendered or line)
             )
             outputs.append({
                 "text": line,

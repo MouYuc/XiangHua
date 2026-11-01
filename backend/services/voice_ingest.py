@@ -13,7 +13,6 @@ an ASR word, but is never required to transcribe the recording by hand.
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import tempfile
 from pathlib import Path
@@ -23,7 +22,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-from backend.services import media_diarization, reference_audio
+from backend.services import media_diarization, reference_audio, whisper_cache
 from backend.services.gpu_arbiter import GPU_ARBITER
 
 MIN_SELECTED_SECONDS = 1.8
@@ -38,21 +37,13 @@ class VoiceIngestError(RuntimeError):
     """A user-actionable failure while preparing a voice asset."""
 
 
-@functools.lru_cache(maxsize=2)
 def _load_whisper(model_name: str):
-    from faster_whisper import WhisperModel
-    from scripts.run_whisper import resolve_local_model
+    """Patchable seam; the model itself is cached process-wide in ``whisper_cache``.
 
-    local = resolve_local_model(model_name)
-    model_ref = str(local) if local is not None else model_name
-    try:
-        import torch
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
-        device = "cpu"
-    compute_type = "float16" if device == "cuda" else "int8"
-    return WhisperModel(model_ref, device=device, compute_type=compute_type)
+    Keeping a second private cache here is what put two large-v3 copies on the card
+    (see ``whisper_cache`` module docstring), so this delegates instead.
+    """
+    return whisper_cache.load_whisper(model_name)
 
 
 def normalize_transcript(text: str, language: str = "zh") -> str:
@@ -79,16 +70,20 @@ def normalize_transcript(text: str, language: str = "zh") -> str:
 
 
 def transcribe_reference(path: str | Path, language: str = "zh", model: str = "large-v3") -> dict[str, Any]:
-    """Transcribe one selected prompt with the local/faster-whisper model."""
-    whisper = _load_whisper(model)
+    """Transcribe one selected prompt with the local/faster-whisper model.
+
+    Decoding goes through ``whisper_cache`` so this path and media ingest share one
+    resident model instead of loading a second copy onto the card.
+    """
     whisper_language = "zh" if language == "yue" else language
-    segments, info = whisper.transcribe(
-        str(path),
-        beam_size=5,
-        vad_filter=False,
+    raw_text, info = whisper_cache.transcribe(
+        path,
+        model=model,
         language=whisper_language,
+        beam_size=5,
+        loader=_load_whisper,
     )
-    text = normalize_transcript("".join(segment.text for segment in segments), language=language)
+    text = normalize_transcript(raw_text, language=language)
     return {
         "text": text,
         "language": getattr(info, "language", None),

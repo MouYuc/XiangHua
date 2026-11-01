@@ -25,6 +25,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 from backend.services.gpu_arbiter import GPU_ARBITER
@@ -625,6 +626,29 @@ def cmd_asr(root, model="large-v3", language="zh"):
     return [(command, str(REPO_ROOT), None)]
 
 
+def _child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for child processes that import the vendored GPT-SoVITS tree.
+
+    ``tools/my_utils.py`` imports Gradio at module scope, and every preparation and
+    training script reaches it, so a plain subprocess dies with
+    ``ModuleNotFoundError: No module named 'gradio'``. The stub is injected through a
+    generated ``sitecustomize`` on ``PYTHONPATH`` - the same mechanism
+    ``scripts/run_dataset_prep.py`` uses - so the vendored files stay untouched and
+    the API path behaves exactly like the CLI.
+    """
+    from scripts.run_dataset_prep import ensure_shim_boot
+
+    boot = ensure_shim_boot()
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(REPO_ROOT), str(boot), env.get("PYTHONPATH", "")]
+    ).strip(os.pathsep)
+    if extra:
+        env.update(extra)
+    return env
+
+
 def cmd_feat(root, exp, corrected_rel="custom_data/asr/sliced_corrected.list"):
     """④ 特征提取：依次跑 1-get-text / 2-get-hubert / 2-get-sv / 3-get-semantic。
 
@@ -640,25 +664,27 @@ def cmd_feat(root, exp, corrected_rel="custom_data/asr/sliced_corrected.list"):
         "bert_pretrained_dir": "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
         "version": "v2Pro",
     }
-    py = [sys.executable, "-s", "GPT_SoVITS/prepare_datasets/"]
+    prepare_dir = "GPT_SoVITS/prepare_datasets"
 
     def env(**extra):
-        e = dict(os.environ)
-        e.update(base)
-        e.update(extra)
-        return e
+        return _child_env({**base, **extra})
+
+    def step(script, extra=None):
+        # The script name belongs to the path: ``python -s <dir>/ x.py`` executes the
+        # directory and dies with "can't find '__main__' module". Same shape as
+        # ``scripts/run_dataset_prep.py``, the CLI that already worked.
+        return ([sys.executable, "-s", f"{prepare_dir}/{script}"], root, env(**(extra or {})))
 
     return [
-        (py + ["1-get-text.py"], root, env()),
-        (py + ["2-get-hubert-wav32k.py"], root, env(cnhubert_base_dir="GPT_SoVITS/pretrained_models/chinese-hubert-base")),
-        (py + ["2-get-sv.py"], root, env(sv_path="GPT_SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt")),
-        (
-            py + ["3-get-semantic.py"],
-            root,
-            env(
-                pretrained_s2G="GPT_SoVITS/pretrained_models/v2Pro/s2Gv2Pro.pth",
-                s2config_path="GPT_SoVITS/configs/s2v2Pro.json",
-            ),
+        step("1-get-text.py"),
+        step("2-get-hubert-wav32k.py", {"cnhubert_base_dir": "GPT_SoVITS/pretrained_models/chinese-hubert-base"}),
+        step("2-get-sv.py", {"sv_path": "GPT_SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"}),
+        step(
+            "3-get-semantic.py",
+            {
+                "pretrained_s2G": "GPT_SoVITS/pretrained_models/v2Pro/s2Gv2Pro.pth",
+                "s2config_path": "GPT_SoVITS/configs/s2v2Pro.json",
+            },
         ),
     ]
 
@@ -689,13 +715,18 @@ def _ensure_s2_logs(root):
 
 
 def cmd_train(root, exp, s1_epochs=15, s2_epochs=12):
-    """⑤b 训练：生成配置 -> 建 s2 日志目录 -> s1 -> s2（一个任务串行完成）。"""
+    """⑤b 训练：生成配置 -> 建 s2 日志目录 -> s1 -> s2（一个任务串行完成）。
+
+    返回的 ``pre`` 必须是零参可调用对象：``start_job`` 在线程里直接 ``pre()``，
+    以前这里返回 ``_ensure_s2_logs`` 本体（需要 ``root``），任务一开始就
+    ``[准备失败] missing 1 required positional argument: 'root'``。
+    """
     cmds = cmd_build_configs(root, exp, s1_epochs, s2_epochs)
     cmds += [
-        ([sys.executable, "-s", "GPT_SoVITS/s1_train.py", "--config_file", "TEMP/tmp_s1.yaml"], root, None),
-        ([sys.executable, "-s", "GPT_SoVITS/s2_train.py", "--config", "TEMP/tmp_s2.json"], root, None),
+        ([sys.executable, "-s", "GPT_SoVITS/s1_train.py", "--config_file", "TEMP/tmp_s1.yaml"], root, _child_env()),
+        ([sys.executable, "-s", "GPT_SoVITS/s2_train.py", "--config", "TEMP/tmp_s2.json"], root, _child_env()),
     ]
-    return cmds, _ensure_s2_logs
+    return cmds, partial(_ensure_s2_logs, root)
 
 
 # ================= 训练产物扫描 =================
