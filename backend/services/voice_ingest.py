@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import librosa
 import numpy as np
@@ -249,7 +250,7 @@ def prepare_reference_from_audio(
         output.mkdir(parents=True, exist_ok=True)
         judge_fn = judge or (lambda path: reference_audio.judge(path, "synthesis"))
         selected: tuple[float, float] | None = None
-        selected_report: dict[str, Any] | None = None
+        _selected_report: dict[str, Any] | None = None
         selected_score = float("-inf")
         total_candidates = max(len(windows), 1)
         with tempfile.TemporaryDirectory(prefix=".voice_ingest_", dir=output) as temporary:
@@ -263,7 +264,7 @@ def prepare_reference_from_audio(
                 score = _candidate_score(report, end - start)
                 if score > selected_score:
                     selected = (start, end)
-                    selected_report = report
+                    _selected_report = report  # kept for debugging the selection
                     selected_score = score
 
         if selected is None:
@@ -271,7 +272,7 @@ def prepare_reference_from_audio(
 
         start, end = selected
         _report_progress(progress, 0.7, "写入参考片段")
-        digest = hashlib.sha256(f"{source.resolve()}|{start:.3f}|{end:.3f}".encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha256(f"{source.resolve()}|{start:.3f}|{end:.3f}".encode()).hexdigest()[:12]
         selected_path = output / f"voice_ref_{digest}.wav"
         sf.write(
             str(selected_path),

@@ -22,8 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services import voice_ingest  # noqa: E402
-from backend.services.voice_prepare_jobs import (  # noqa: E402
+from backend.services import voice_ingest
+from backend.services.voice_prepare_jobs import (
     MAX_RETAINED_JOBS,
     VoicePrepareJobManager,
 )

@@ -25,9 +25,10 @@ import copy
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from backend.services import voice_ingest
 

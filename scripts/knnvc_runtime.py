@@ -81,7 +81,7 @@ def load_model(
     root: str | Path = DEFAULT_KNNVC_ROOT,
     device: str | None = None,
     prematched: bool = True,
-) -> "object":
+) -> object:
     """Assemble the kNN-VC matcher from the vendored checkpoints.
 
     ``prematched=True`` selects the vocoder trained on pre-matched features,
@@ -91,12 +91,12 @@ def load_model(
     explicit error rather than a silent network download.
     """
     resolved = ensure_import_path(root)
+    import json
+
     from hifigan.models import Generator as HiFiGAN
-    from hifigan.utils import AttrDict  # noqa: F401  (imported for parity/typing)
+    from hifigan.utils import AttrDict
     from matcher import KNeighborsVC
     from wavlm.WavLM import WavLM, WavLMConfig
-
-    import json
 
     device_obj = resolve_device(device)
 
@@ -146,6 +146,21 @@ def load_audio_16k(path: str | Path) -> torch.Tensor:
     return waveform
 
 
+class Cancelled(RuntimeError):
+    """Raised when the caller's ``should_stop()`` asked to abort.
+
+    Conversion is the one operation with a genuinely long uninterruptible step
+    (the kNN ``match`` matmul), so cancellation is checked at every boundary that
+    can be checked cheaply: each feature-extraction chunk, each reference file,
+    and just before the matmul.
+    """
+
+
+def _check_cancel(should_stop) -> None:
+    if should_stop is not None and should_stop():
+        raise Cancelled("音色转换已取消。")
+
+
 def chunk_bounds(total: int, chunk_samples: int) -> list[tuple[int, int]]:
     """Split ``total`` samples into non-overlapping windows."""
     return [(start, min(start + chunk_samples, total)) for start in range(0, total, chunk_samples)]
@@ -157,6 +172,7 @@ def features_for_waveform(
     chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
     vad_trigger_level: float = 7.0,
     progress: bool = False,
+    should_stop=None,
 ) -> torch.Tensor:
     """Encode a waveform into WavLM layer-6 features, one chunk at a time.
 
@@ -170,6 +186,7 @@ def features_for_waveform(
     pieces: list[torch.Tensor] = []
     bounds = chunk_bounds(waveform.shape[-1], chunk_samples)
     for index, (start, end) in enumerate(bounds):
+        _check_cancel(should_stop)
         piece = waveform[..., start:end]
         if piece.shape[-1] < HOP_LENGTH * 4:
             continue
@@ -209,6 +226,7 @@ def build_matching_set(
     chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
     vad_trigger_level: float = 7.0,
     progress: bool = True,
+    should_stop=None,
 ) -> torch.Tensor:
     """Build (or load) the target-speaker frame pool.
 
@@ -228,6 +246,7 @@ def build_matching_set(
 
     pools: list[torch.Tensor] = []
     for source in sources:
+        _check_cancel(should_stop)
         source_path = Path(source)
         if not source_path.is_file():
             raise FileNotFoundError(f"reference audio not found: {source_path}")
@@ -238,6 +257,7 @@ def build_matching_set(
             features_for_waveform(
                 model, waveform, chunk_seconds=chunk_seconds,
                 vad_trigger_level=vad_trigger_level, progress=progress,
+                should_stop=should_stop,
             )
         )
     features = torch.cat(pools, dim=0)
@@ -265,6 +285,7 @@ def convert(
     matching_set: torch.Tensor,
     topk: int = 4,
     tgt_loudness_db: float | None = -16.0,
+    should_stop=None,
 ) -> torch.Tensor:
     """Convert one source waveform to the matching set's timbre.
 
@@ -272,18 +293,22 @@ def convert(
     of 4; a smaller k keeps more of the source's own frame variation, which
     matters when the source is sung rather than spoken.
     """
+    _check_cancel(should_stop)
     if isinstance(source, torch.Tensor):
         waveform = source
     else:
         waveform = load_audio_16k(source)
     query = features_for_waveform(
-        model, waveform, vad_trigger_level=0.0, progress=False
+        model, waveform, vad_trigger_level=0.0, progress=False, should_stop=should_stop
     ).to(model.device)
     if topk > matching_set.shape[0]:
         raise ValueError(
             f"topk={topk} exceeds the matching set size ({matching_set.shape[0]} frames); "
             "supply more reference audio"
         )
+    # The matmul below is a single call: it cannot be interrupted, so this is the
+    # last chance to honour a cancel before it starts.
+    _check_cancel(should_stop)
     return model.match(query, matching_set, topk=topk, tgt_loudness_db=tgt_loudness_db)
 
 

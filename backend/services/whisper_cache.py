@@ -41,6 +41,7 @@ TRANSCRIBE_LOCK = threading.Lock()
 def load_whisper(model_name: str):
     """Return the cached ``faster_whisper.WhisperModel`` for ``model_name``."""
     from faster_whisper import WhisperModel
+
     from scripts.run_whisper import resolve_local_model
 
     local = resolve_local_model(model_name)

@@ -405,7 +405,8 @@ def estimate_levels(rms: np.ndarray) -> dict[str, float | None]:
     speech = float(np.percentile(rms, SPEECH_PERCENTILE))
     noise = float(np.percentile(rms, NOISE_PERCENTILE))
     median = float(np.percentile(rms, 50.0))
-    to_db = lambda value: round(float(20.0 * np.log10(value)), 2) if value > AMPLITUDE_FLOOR else None
+    def to_db(value: float) -> float | None:
+        return round(float(20.0 * np.log10(value)), 2) if value > AMPLITUDE_FLOOR else None
     headroom = to_db(median / noise) if noise > AMPLITUDE_FLOOR and median > 0 else None
     # Digital silence in the gaps puts the noise floor below the file's own
     # resolution; the ratio is then meaningless rather than merely large.

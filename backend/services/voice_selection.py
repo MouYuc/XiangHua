@@ -14,7 +14,6 @@ from backend.services.core import (
     SUPPORTED_SYNTHESIS_LANGUAGES,
 )
 
-
 VOICE_PROFILE_FILE = CONFIG_DIR / "voice_profiles.json"
 ACCENT_MANIFEST_FILE = REPO_ROOT / "assets" / "accent_packs.json"
 ACCENTS_ROOT = REPO_ROOT / "assets" / "accent_packs"

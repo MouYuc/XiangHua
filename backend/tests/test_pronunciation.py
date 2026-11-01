@@ -21,12 +21,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services.pronunciation import (  # noqa: E402
+from backend.services.pronunciation import (
     AccentLevel,
     PronunciationPlan,
     build_pronunciation_plan,
 )
-from tools.rules import safe_name, to_lightmid  # noqa: E402
+from tools.rules import safe_name, to_lightmid
 
 
 class AccentLevelTests(unittest.TestCase):

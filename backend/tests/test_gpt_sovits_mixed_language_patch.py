@@ -4,7 +4,6 @@ import pytest
 
 from tools.gpt_sovits_mixed_language_patch import apply_mixed_language_patches
 
-
 TEXT_PREPROCESSOR = '''\
 import torch
 

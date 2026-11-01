@@ -12,14 +12,16 @@ from __future__ import annotations
 import copy
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+from backend.infra.ids import new_job_id
 from backend.services import core, voice_assets
 
 DEFAULT_SPEAKER = "旁白"
-TERMINAL_STATUSES = {"done", "failed"}
+TERMINAL_STATUSES = {"done", "failed", "cancelled"}
 
 
 def _now() -> str:
@@ -71,6 +73,8 @@ class _DialogueJob:
     snapshot: dict[str, Any]
     revision: int = 0
     lock: threading.RLock = field(default_factory=threading.RLock)
+    # Set by ``cancel()``; checked between lines so the GPU is released promptly.
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 class DialogueJobManager:
@@ -100,7 +104,7 @@ class DialogueJobManager:
         destination = (
             Path(output_dir) if output_dir is not None else core.new_output_dir()
         )
-        job_id = f"dlg_{int(time.time() * 1000)}"
+        job_id = new_job_id("dlg")
         job = _DialogueJob(
             job_id=job_id,
             snapshot={
@@ -128,6 +132,20 @@ class DialogueJobManager:
             records: list[dict[str, Any]] = []
             try:
                 for index, entry in enumerate(parsed, 1):
+                    if job.cancel_event.is_set():
+                        completed_so_far = len([item for item in records if item["file"]])
+                        self.update(
+                            job_id,
+                            {
+                                "status": "cancelled",
+                                "outputs": [dict(item) for item in records],
+                                "completed": completed_so_far,
+                                "message": f"任务已取消，已完成 {completed_so_far}/{len(parsed)} 句。",
+                                "error": "",
+                                "ended_at": _now(),
+                            },
+                        )
+                        return
                     speaker, line = entry["speaker"], entry["line"]
                     voice_card_id = str(bindings.get(speaker) or "")
                     records.append(
@@ -175,6 +193,28 @@ class DialogueJobManager:
 
         threading.Thread(target=_run, daemon=True, name=job_id).start()
         return self.snapshot(job_id) or {}
+
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        """Ask a dialogue job to stop after the current line."""
+        job = self._jobs.get(job_id)
+        if job is None:
+            return {"cancelled": False, "reason": "任务不存在。"}
+        with job.lock:
+            if job.snapshot.get("status") in TERMINAL_STATUSES:
+                return {"cancelled": False, "reason": "任务已经结束，无法取消。"}
+            job.cancel_event.set()
+        self.update(job_id, {"message": "正在取消，等待当前语句完成…"})
+        return {"cancelled": True, "reason": "已请求取消，当前语句完成后停止。"}
+
+    def list_snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Recent dialogue jobs, newest first (used by the job registry)."""
+        with self._lock:
+            jobs = list(self._jobs.values())[-max(0, int(limit)):]
+        rows: list[dict[str, Any]] = []
+        for job in reversed(jobs):
+            with job.lock:
+                rows.append(copy.deepcopy(job.snapshot))
+        return rows
 
     def _synthesize_line(
         self,

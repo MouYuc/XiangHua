@@ -30,7 +30,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-import five_language_verify as verify  # noqa: E402
+import five_language_verify as verify
 
 
 def unit_vector(seed: int, dimension: int = 64) -> np.ndarray:

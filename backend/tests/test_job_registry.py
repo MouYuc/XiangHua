@@ -20,15 +20,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services import core, synthesis_jobs, timbre, voice_prepare_jobs  # noqa: E402
-from backend.services.job_registry import (  # noqa: E402
+from backend.services import core, synthesis_jobs, timbre, voice_prepare_jobs
+from backend.services.job_registry import (
     JOB_REGISTRY,
     JobRegistry,
     normalize_status,
 )
-from backend.services.synthesis_jobs import SynthesisJobManager  # noqa: E402
-from backend.services.voice_prepare_jobs import VoicePrepareJobManager  # noqa: E402
-from tools import train as train_backend  # noqa: E402
+from backend.services.synthesis_jobs import SynthesisJobManager
+from backend.services.voice_prepare_jobs import VoicePrepareJobManager
+from tools import train as train_backend
 
 JOB_FIELDS = {
     "job_id",
@@ -44,7 +44,7 @@ JOB_FIELDS = {
     "source",
 }
 
-KINDS = {"synthesis", "voice_prepare", "timbre", "training", "media_analysis"}
+KINDS = {"synthesis", "dialogue", "voice_prepare", "timbre", "training", "media_analysis"}
 STATUSES = {"queued", "running", "done", "failed", "cancelled", "unknown"}
 
 
@@ -212,7 +212,9 @@ class JobRegistryListingTests(RegistryTestBase):
         self.assertEqual(record["error"], "")
         self.assertEqual(record["started_at"], "2026-10-17 21:00:00")
         self.assertEqual(record["updated_at"], "2026-10-17 21:00:03")
-        self.assertFalse(record["cancelable"])
+        # Cancellation landed in 2026-11: a running synthesis can be stopped
+        # between lines, so the task centre offers the button.
+        self.assertTrue(record["cancelable"])
         self.assertIn("synthesis_jobs", record["source"])
         self.assertEqual(payload["counts"]["running"], 1)
         self.assertEqual(payload["by_kind"]["synthesis"], 1)
@@ -268,7 +270,7 @@ class JobRegistryListingTests(RegistryTestBase):
         self.assertEqual(record["title"], "音色转换 song.wav")
         self.assertEqual(record["stage"], "encode")
         self.assertAlmostEqual(record["progress"], 0.25)
-        self.assertFalse(record["cancelable"])
+        self.assertTrue(record["cancelable"])
 
     def test_timbre_legacy_backend_falls_back_to_internal_jobs(self) -> None:
         """Transitional path: a backend without any public snapshot method."""
@@ -440,18 +442,31 @@ class JobRegistryCancelTests(RegistryTestBase):
         self.assertEqual(result, {"cancelled": True, "reason": "已发送终止信号。"})
         stop_job.assert_called_once_with("train_123")
 
-    def test_cancel_synthesis_is_rejected_without_calling_stop_job(self) -> None:
+    def test_cancel_synthesis_delegates_to_the_synthesis_manager(self) -> None:
+        """Synthesis became cancellable in 2026-11 (cancel event between lines)."""
         registry = self.make_registry(
             synthesis=[JobRegistryListingTests.SYNTHESIS_SNAPSHOT]
         )
-        with patch.object(train_backend, "stop_job", return_value=True) as stop_job:
+        with patch.object(
+            synthesis_jobs.SYNTHESIS_JOBS,
+            "cancel",
+            return_value={"cancelled": True, "reason": "已请求取消。"},
+        ) as cancel, patch.object(train_backend, "stop_job") as stop_job:
             result = registry.cancel("synth_100")
 
-        self.assertEqual(
-            result,
-            {"cancelled": False, "reason": "该类任务暂不支持取消。"},
-        )
+        self.assertTrue(result["cancelled"])
+        cancel.assert_called_once_with("synth_100")
         stop_job.assert_not_called()
+
+    def test_cancel_media_analysis_is_still_unsupported(self) -> None:
+        """Media analysis has no safe interruption point; say so explicitly."""
+        registry = self.make_registry(
+            media_sessions=[{"session_id": "media_1", "job": {"status": "running"}}]
+        )
+        job = registry.list_jobs()["jobs"][0]
+        result = registry.cancel(job["job_id"])
+        self.assertFalse(result["cancelled"])
+        self.assertIn("不支持", result["reason"])
 
     def test_cancel_unknown_job_reports_missing(self) -> None:
         registry = self.make_registry()
@@ -612,7 +627,7 @@ class SnapshotMethodTests(unittest.TestCase):
     def test_synthesis_list_snapshots_returns_deep_copies(self) -> None:
         manager = SynthesisJobManager()
 
-        def fake_synthesize(cfg, text, output_dir=None, progress_cb=None, event_cb=None):
+        def fake_synthesize(cfg, text, output_dir=None, progress_cb=None, event_cb=None, should_stop=None):
             if progress_cb is not None:
                 progress_cb({"status": "running", "completed": 1, "current": 1})
             return {

@@ -34,7 +34,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-import f0_estimate as f0  # noqa: E402
+import f0_estimate as f0
 
 
 def track(frequencies: list[float], hop: float = 0.01, method: str = "synthetic", degenerate: bool = False) -> f0.F0Track:

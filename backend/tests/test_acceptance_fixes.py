@@ -26,8 +26,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services import core  # noqa: E402
-from tools import train  # noqa: E402
+from backend.services import core
+from tools import train
 
 
 class TrainingCommandTests(unittest.TestCase):
@@ -56,7 +56,7 @@ class UploadFilenameTests(unittest.TestCase):
     def test_latin1_mojibake_is_recovered(self) -> None:
         from backend.app import _upload_filename
 
-        decoded_by_starlette = "胡桃.mp4".encode("utf-8").decode("latin-1")
+        decoded_by_starlette = "胡桃.mp4".encode().decode("latin-1")
         self.assertEqual(_upload_filename(SimpleNamespace(filename=decoded_by_starlette)), "胡桃.mp4")
 
     def test_real_utf8_name_is_kept(self) -> None:

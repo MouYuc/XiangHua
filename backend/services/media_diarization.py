@@ -14,8 +14,8 @@ slice remains the source of truth.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable, Sequence
 
 import numpy as np
 
@@ -404,7 +404,7 @@ def diarize(
     totals: dict[int, float] = {}
     counts: dict[int, int] = {}
     turn_counts: dict[int, int] = {}
-    for window, label in zip(windows, labels):
+    for _window, label in zip(windows, labels):
         counts[int(label)] = counts.get(int(label), 0) + 1
     for turn in turns:
         totals[turn.speaker_index] = totals.get(turn.speaker_index, 0.0) + turn.duration

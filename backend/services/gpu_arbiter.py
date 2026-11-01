@@ -17,9 +17,10 @@ import os
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
 
 # Interactive work (synthesis, analysis, voice preparation, timbre) waits this
 # long for a busy card before failing with a message that names the holder. A
@@ -103,7 +104,7 @@ class GpuArbiter:
         *,
         job_id: str = "",
         label: str = "",
-        timeout: float | None | object = _UNSET,
+        timeout: float | object | None = _UNSET,
     ) -> Iterator[Lease]:
         """Hold the GPU for the duration of the block.
 

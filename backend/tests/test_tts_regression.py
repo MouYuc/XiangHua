@@ -24,8 +24,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-import tts_regression as regression  # noqa: E402
-
+import tts_regression as regression
 
 FIXTURE_PATH = REPO_ROOT / "backend" / "tests" / "fixtures" / "tts_regression_20.json"
 

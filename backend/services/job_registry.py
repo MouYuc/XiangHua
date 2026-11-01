@@ -27,10 +27,12 @@ import copy
 import math
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 KIND_SYNTHESIS = "synthesis"
+KIND_DIALOGUE = "dialogue"
 KIND_VOICE_PREPARE = "voice_prepare"
 KIND_TIMBRE = "timbre"
 KIND_TRAINING = "training"
@@ -38,6 +40,7 @@ KIND_MEDIA_ANALYSIS = "media_analysis"
 
 KINDS = (
     KIND_SYNTHESIS,
+    KIND_DIALOGUE,
     KIND_VOICE_PREPARE,
     KIND_TIMBRE,
     KIND_TRAINING,
@@ -216,6 +219,7 @@ class JobRegistry:
         self._media_lock = threading.RLock()
         self._collectors = (
             (KIND_SYNTHESIS, self._collect_synthesis),
+            (KIND_DIALOGUE, self._collect_dialogue),
             (KIND_VOICE_PREPARE, self._collect_voice_prepare),
             (KIND_TIMBRE, self._collect_timbre),
             (KIND_TRAINING, self._collect_training),
@@ -269,11 +273,11 @@ class JobRegistry:
         return None
 
     def cancel(self, job_id: str) -> dict[str, Any]:
-        """Cancel a job when its source supports it.
+        """Ask the owning manager to cancel a job.
 
-        Only training exposes a stop primitive (``tools.train.stop_job``).
-        Everything else is explicitly reported as unsupported rather than
-        silently doing nothing.
+        Synthesis, dialogue and timbre jobs stop between lines/chunks (they poll a
+        ``cancel_event``); training signals its subprocess. Media analysis is the
+        one kind that stays unsupported, and says so instead of doing nothing.
         """
         wanted = _text(job_id)
         if not wanted:
@@ -281,17 +285,31 @@ class JobRegistry:
         job = self.get(wanted)
         if job is None:
             return {"cancelled": False, "reason": "任务不存在。"}
-        if job.get("kind") != KIND_TRAINING:
-            return {"cancelled": False, "reason": _UNSUPPORTED_CANCEL_REASON}
-        try:
-            from tools import train as train_backend
 
-            cancelled = bool(train_backend.stop_job(wanted))
-        except Exception as exc:  # noqa: BLE001 - cancellation must not raise
+        kind = job.get("kind")
+        try:
+            if kind == KIND_SYNTHESIS:
+                from backend.services import synthesis_jobs
+
+                return synthesis_jobs.SYNTHESIS_JOBS.cancel(wanted)
+            if kind == KIND_DIALOGUE:
+                from backend.services import dialogue as dialogue_service
+
+                return dialogue_service.DIALOGUE_JOBS.cancel(wanted)
+            if kind == KIND_TIMBRE:
+                from backend.services import timbre as timbre_service
+
+                return timbre_service.TIMBRE_BACKEND.cancel(wanted)
+            if kind == KIND_TRAINING:
+                from tools import train as train_backend
+
+                cancelled = bool(train_backend.stop_job(wanted))
+                if cancelled:
+                    return {"cancelled": True, "reason": "已发送终止信号。"}
+                return {"cancelled": False, "reason": "训练任务当前没有可终止的进程。"}
+        except Exception as exc:
             return {"cancelled": False, "reason": f"取消失败：{type(exc).__name__}: {exc}"}
-        if cancelled:
-            return {"cancelled": True, "reason": "已发送终止信号。"}
-        return {"cancelled": False, "reason": "训练任务当前没有可终止的进程。"}
+        return {"cancelled": False, "reason": _UNSUPPORTED_CANCEL_REASON}
 
     # ------------------------------------------------------------- aggregation ---
 
@@ -306,7 +324,7 @@ class JobRegistry:
                 for row in list(rows):
                     if isinstance(row, dict):
                         records.append(row)
-            except Exception as exc:  # noqa: BLE001 - one broken source is isolated
+            except Exception as exc:
                 errors.append(f"{kind}: {type(exc).__name__}: {exc}")
         return records, errors
 
@@ -344,8 +362,46 @@ class JobRegistry:
                     error=_text(snapshot.get("error")),
                     started_at=_text(snapshot.get("started_at")),
                     updated_at=_text(snapshot.get("updated_at")) or _text(snapshot.get("started_at")),
-                    cancelable=False,
+                    cancelable=status in (STATUS_QUEUED, STATUS_RUNNING),
                     source="backend.services.synthesis_jobs.SYNTHESIS_JOBS",
+                )
+            )
+        return records
+
+    def _collect_dialogue(self) -> list[dict[str, Any]]:
+        """Dialogue jobs were never surfaced here, so the task centre could not
+        see them and they could not be cancelled through ``/api/jobs``."""
+        from backend.services import dialogue as dialogue_service
+
+        snapshots = dialogue_service.DIALOGUE_JOBS.list_snapshots(limit=_SOURCE_SCAN_LIMIT)
+        records: list[dict[str, Any]] = []
+        for snapshot in snapshots or []:
+            if not isinstance(snapshot, dict):
+                continue
+            job_id = _text(snapshot.get("job_id"))
+            if not job_id:
+                continue
+            status = normalize_status(snapshot.get("status"), kind=KIND_DIALOGUE)
+            total = _as_int(snapshot.get("total"))
+            completed = _as_int(snapshot.get("completed"))
+            progress = None
+            if total and completed is not None and total > 0:
+                progress = max(0.0, min(1.0, completed / total))
+            if status == STATUS_DONE:
+                progress = 1.0
+            records.append(
+                _record(
+                    job_id=job_id,
+                    kind=KIND_DIALOGUE,
+                    title=f"对话合成 {completed or 0}/{total or 0} 句",
+                    status=status,
+                    progress=progress,
+                    stage=_text(snapshot.get("message")),
+                    error=_text(snapshot.get("error")),
+                    started_at=_text(snapshot.get("started_at")),
+                    updated_at=_text(snapshot.get("updated_at")) or _text(snapshot.get("started_at")),
+                    cancelable=status in (STATUS_QUEUED, STATUS_RUNNING),
+                    source="backend.services.dialogue.DIALOGUE_JOBS",
                 )
             )
         return records
@@ -435,7 +491,9 @@ class JobRegistry:
                     error=_text(snapshot.get("error")),
                     started_at=_text(snapshot.get("started_at")),
                     updated_at=_text(snapshot.get("updated_at")) or _text(snapshot.get("started_at")),
-                    cancelable=False,
+                    # Timbre jobs honour a cancel event at the two safe boundaries
+                    # (before queueing for the GPU and right after the lease).
+                    cancelable=status in (STATUS_QUEUED, STATUS_RUNNING),
                     source="backend.services.timbre.TIMBRE_BACKEND",
                 )
             )

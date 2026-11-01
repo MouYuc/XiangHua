@@ -14,12 +14,13 @@ from fastapi.testclient import TestClient
 
 from backend import app as app_module
 from backend.services import core
+from backend.services import voice_ingest as voice_ingest_module
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services import voice_ingest  # noqa: E402
+from backend.services import voice_ingest
 
 RATE = 16000
 
@@ -118,7 +119,7 @@ class VoiceIngestRouteTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as raw:
             with patch.object(core, "REFERENCE_AUDIO_DIR", Path(raw)), patch.object(
-                app_module.voice_ingest, "prepare_reference_from_audio", return_value=prepared
+                voice_ingest_module, "prepare_reference_from_audio", return_value=prepared
             ):
                 client = TestClient(app_module.create_app())
                 response = client.post(

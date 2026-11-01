@@ -8,8 +8,8 @@ manifest). The model-backed smoke test lives in ``scripts/smoke_media_ingest.py`
 
 from __future__ import annotations
 
-import io
 import hashlib
+import io
 import json
 import sys
 import tempfile
@@ -27,8 +27,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services import media_diarization, media_ingest  # noqa: E402
-from backend.services.gpu_arbiter import GPU_ARBITER  # noqa: E402
+from backend.services import media_diarization, media_ingest
+from backend.services.gpu_arbiter import GPU_ARBITER
 
 RATE = 16000
 
@@ -111,7 +111,7 @@ class SessionStorageTests(unittest.TestCase):
             def writer() -> None:
                 try:
                     service.save(session)
-                except BaseException as exc:  # noqa: BLE001 - the assertion reports it
+                except BaseException as exc:
                     errors.append(exc)
 
             handle = path.open("r", encoding="utf-8")
@@ -227,7 +227,7 @@ class AnalysisExclusivityTests(unittest.TestCase):
             release = threading.Event()
             calls: list[str] = []
 
-            def fake_worker(self, session_id, speaker_count, transcribe, model):  # noqa: ANN001
+            def fake_worker(self, session_id, speaker_count, transcribe, model):
                 calls.append(session_id)
                 entered.set()
                 release.wait(10.0)
@@ -264,7 +264,7 @@ class AnalysisExclusivityTests(unittest.TestCase):
             outcomes: list[str] = []
             calls: list[str] = []
 
-            def fake_worker(self, session_id, speaker_count, transcribe, model):  # noqa: ANN001
+            def fake_worker(self, session_id, speaker_count, transcribe, model):
                 calls.append(session_id)
                 entered.set()
                 release.wait(10.0)
@@ -745,17 +745,19 @@ class GpuLeaseTests(unittest.TestCase):
 class ApiTests(unittest.TestCase):
     def _client(self):
         from fastapi.testclient import TestClient
+
         from backend import app as app_module
 
         return TestClient(app_module.create_app())
 
     def test_upload_requires_rights(self) -> None:
         from unittest.mock import patch
-        from backend import app as app_module
+
+        from backend.api import deps
 
         with tempfile.TemporaryDirectory() as raw:
             service = media_ingest.MediaIngestService(raw, embedder=FakeEmbedder())
-            with patch.object(app_module, "_media_service", return_value=service):
+            with patch.object(deps, "_media_service", return_value=service):
                 client = self._client()
                 response = client.post(
                     "/api/media/sessions",
@@ -768,11 +770,12 @@ class ApiTests(unittest.TestCase):
     def test_upload_analyze_select_and_export(self) -> None:
         import time
         from unittest.mock import patch
-        from backend import app as app_module
+
+        from backend.api import deps
 
         with tempfile.TemporaryDirectory() as raw:
             service = media_ingest.MediaIngestService(raw, embedder=FakeEmbedder())
-            with patch.object(app_module, "_media_service", return_value=service):
+            with patch.object(deps, "_media_service", return_value=service):
                 client = self._client()
                 response = client.post(
                     "/api/media/sessions",
@@ -781,8 +784,10 @@ class ApiTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 200, response.text)
                 session_id = response.json()["session"]["session_id"]
+                # Upload transcode and analysis both run on workers now, so the
+                # session walks uploading -> running -> done behind the response.
                 job = {"status": "timeout"}
-                for _ in range(80):
+                for _ in range(200):
                     job = client.get(f"/api/media/sessions/{session_id}/job").json()["job"]
                     if job["status"] in {"done", "fail"}:
                         break

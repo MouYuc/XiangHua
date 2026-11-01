@@ -13,8 +13,10 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from backend import app as app_module
+from backend.api import deps
 from backend.schemas import ConfigUpdate
 from backend.services import core
+from backend.services import reference_prompt as reference_prompt_module
 from backend.services.pronunciation import PROTECTED_TERMS, PronunciationPlan
 
 
@@ -315,8 +317,8 @@ class ReferencePairRouteTests(unittest.TestCase):
             "cer": 1.0,
         }
         core.SYNTHESIS_BACKEND._warmup["status"] = "ready"
-        with patch.object(app_module, "apply_voice_selection") as select, patch.object(
-            app_module.reference_prompt, "reference_pair_check", return_value=mismatch
+        with patch.object(deps, "apply_voice_selection") as select, patch.object(
+            reference_prompt_module, "reference_pair_check", return_value=mismatch
         ):
             select.return_value.config = {
                 "ref_audio": "known.wav",

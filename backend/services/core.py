@@ -10,24 +10,77 @@ import re
 import shutil
 import subprocess
 import sys
-import threading
 import tempfile
-import time
+import threading
 import uuid
-import zlib
-from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-import numpy as np
 import soundfile as sf
 
+from backend.domain.text import (  # noqa: F401 - facade re-exports
+    _ACCEPTABLE_SEGMENT_DURATION_RATIO,
+    _CAPITAL_INITIALISM_PATTERN,
+    _CJK_PUNCTUATION_MAP,
+    _DOTTED_INITIALISM_PATTERN,
+    _HYPHENATED_INITIALISM_PATTERN,
+    _MIXED_TERMINAL_PUNCTUATION,
+    _SPACED_INITIALISM_PATTERN,
+    _WORDLIKE_ENGLISH_ABBREVIATIONS,
+    LANGUAGE_TAG_PATTERN,
+    MIXED_LANGUAGE_BOUNDARY_PAUSE_MS,
+    SUPPORTED_SYNTHESIS_LANGUAGES,
+    UNKNOWN_LANGUAGE_TAG_PATTERN,
+    Segment,
+    SynthesisSegment,
+    _merge_fragment_segments,
+    _merge_pronunciation_plans,
+    _normalize_fragment_punctuation,
+    _spell_english_initialism,
+    compose_mixed_language_text,
+    configured_accent_level,
+    deterministic_language_seed,
+    english_pronunciation_hint,
+    expected_segment_duration,
+    has_pronounceable_text,
+    normalize_english_pronunciations,
+    normalize_mixed_pronunciation_text,
+    parse_language_segments,
+    parse_lines,
+    render_language_segments,
+    render_line_with_plan,
+    render_synthesis_text,
+    render_with_plan,
+    to_engine_segments,
+    trim_segment_edges,
+    validate_synthesis_language_text,
+)
+from backend.engine.tts import SynthesisBackend, backend_cwd  # noqa: F401 - facade
+from backend.infra import jsonstore
+from backend.infra.logging import get_logger
+from backend.pipeline import synthesis as _pipeline
+from backend.pipeline.synthesis import (  # noqa: F401 - facade re-exports
+    _READBACK_RETRY_SECONDS,
+    _TAKE_SEED_STRIDE,
+    _TAKE_SELECTION_CER_THRESHOLD,
+    _TAKE_SELECTION_MAX_TAKES,
+    _TAKE_SELECTION_MIN_JUDGE_CHARS,
+    PRONUNCIATION_MANIFEST_FILENAME,
+    PRONUNCIATION_MANIFEST_SCHEMA_VERSION,
+    SHORT_OUTPUT_RATIO,
+    SynthesisCancelled,
+    _emit_event,
+    _emit_progress,
+    _judgeable_char_count,
+    _ReadbackJudge,
+    _short_output_floor,
+    build_pronunciation_manifest,
+)
+from backend.services.pronunciation import AccentLevel
 from tools.env import resolve_default_environment_root
-from backend.services.gpu_arbiter import GPU_ARBITER, GpuBusyTimeout
-from backend.services.pronunciation import AccentLevel, PronunciationPlan, build_pronunciation_plan
-from tools.rules import safe_name
+
+logger = get_logger("xianghua.core")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,8 +92,6 @@ REFERENCE_AUDIO_DIR = CONFIG_DIR / "reference_audio"
 REFERENCE_AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
 MAX_REFERENCE_AUDIO_BYTES = 100 * 1024 * 1024
 MAX_PATCH_BYTES = 1024 * 1024
-SUPPORTED_SYNTHESIS_LANGUAGES = {"zh", "yue", "en", "ja", "ko"}
-MIXED_LANGUAGE_BOUNDARY_PAUSE_MS = 120
 ORB_COLOR_DEFAULTS = {
     "orb_synthesis_token_color": "#75BBFF",
     "orb_settled_color": "#69DDA4",
@@ -50,40 +101,28 @@ TRAINING_AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
 DOWNLOADABLE_SUFFIXES = TRAINING_AUDIO_SUFFIXES | {".zip", ".srt"}
 _DOWNLOADS_LOCK = threading.RLock()
 _CONFIG_LOCK = threading.RLock()
-LANGUAGE_TAG_PATTERN = re.compile(r"<(/?)(zh|yue|en|ja|ko)>", re.IGNORECASE)
-UNKNOWN_LANGUAGE_TAG_PATTERN = re.compile(r"</?([A-Za-z]{2,8})>")
-SynthesisSegment = tuple[str, str]
-_CJK_PUNCTUATION_MAP = str.maketrans({
-    "。": ".", "，": ",", "！": "!", "？": "?", "：": ":", "；": ";", "、": ",",
-})
-_MIXED_TERMINAL_PUNCTUATION = "。！？!?；;：:…."
-_ACCEPTABLE_SEGMENT_DURATION_RATIO = 0.80
+#: On-disk format version for ``config.json``. Bump it and add a migration entry
+#: in ``_CONFIG_STORE`` whenever a persisted field changes meaning.
+CONFIG_SCHEMA_VERSION = 1
+#: How many synthesis history rows are kept. Older rows are dropped on write —
+#: this is a bounded activity log, not an audit trail (provenance sidecars are
+#: the durable record).
+HISTORY_LIMIT = 200
+#: The download registry is a credential map for ``/api/files/<id>``. Entries
+#: whose backing file is gone are pruned on write so the map cannot grow forever.
+DOWNLOADS_LIMIT = 5000
+#: Hard ceiling for a single ffmpeg remux. Generous for a 10-minute take,
+#: short enough that a wedged process cannot hold the GPU lease for the session.
+FFMPEG_TIMEOUT_SECONDS = 120
 # Below this share of the duration the text needs, the take was not really synthesised
 # and the user has to be told. Deliberately far below _ACCEPTABLE_SEGMENT_DURATION_RATIO:
 # that one drives the retry loop (a merely hasty take should be retried), while this one
 # flags a delivery that is broken rather than quick. Measured failure case: 0.08 s
 # against an expected 2.6 s, i.e. 3%.
-SHORT_OUTPUT_RATIO = 0.25
-PRONUNCIATION_MANIFEST_SCHEMA_VERSION = 1
-PRONUNCIATION_MANIFEST_FILENAME = "pronunciation.json"
 
 
-def _short_output_floor(expected_seconds: float, text: str) -> float:
-    """Duration below which a take counts as "not really synthesised".
-
-    Normal lines keep the historical 0.6 s floor. A one-character line has no
-    usable duration estimate (the estimator floors every line at 0.55 s), so it
-    only needs to clear a collapse floor: measured 「噗！」 is a correct 0.36 s
-    that used to be flagged, while a collapsed take stays around 0.05 s.
-    """
-    if _judgeable_char_count(text) < _TAKE_SELECTION_MIN_JUDGE_CHARS:
-        return max(0.15, expected_seconds * SHORT_OUTPUT_RATIO)
-    return max(0.6, expected_seconds * SHORT_OUTPUT_RATIO)
 
 
-def _judgeable_char_count(text: str) -> int:
-    """Characters a readback CER can actually score (letters/CJK digits, no punctuation)."""
-    return sum(1 for char in text if char.isalnum())
 
 
 # --- 读回自选 take（零样本路线的可靠性杠杆）--------------------------------
@@ -92,64 +131,20 @@ def _judgeable_char_count(text: str) -> int:
 # 就换种子再合成一次、在真实存在的 take 里选可懂的那个。这是选 take 不是刷分：
 # 阈值(15%)故意高于回归验收线(5%)，只救灾难，不追求完美；非中文与显式混语行
 # 不参与，读回模型不可用时静默保留首 take。
-_TAKE_SELECTION_CER_THRESHOLD = 0.15
-_TAKE_SELECTION_MAX_TAKES = 3
-_TAKE_SEED_STRIDE = 7 * 104_729
 # 读回 CER 对单字/拟声词没有区分力：实测「噗！」三次 take 都是 200%，只是白白
 # 多合成两次。字数不足的行直接交首 take，读回不参与判定。
-_TAKE_SELECTION_MIN_JUDGE_CHARS = 2
 
 
-class _ReadbackJudge:
-    """Lazy SenseVoice readback for take selection; unavailable means no opinion."""
+#: How long to wait before trying to load the readback model again after a
+#: failure. Loading it is expensive, but "one transient failure disables take
+#: selection for the whole process lifetime" silently degraded output quality.
 
-    def __init__(self) -> None:
-        self._attempted = False
-        self._model: Any = None
-        self._cer: Any = None
-        self.reason = ""
 
-    def _ensure(self) -> None:
-        if self._attempted:
-            return
-        self._attempted = True
-        try:
-            scripts = REPO_ROOT / "scripts"
-            if str(scripts) not in sys.path:
-                sys.path.insert(0, str(scripts))
-            from asr_readback import cer as cer_function
-            from five_language_verify import LanguageIdentifier
-
-            self._cer = cer_function
-            self._model = LanguageIdentifier()
-        except Exception as exc:  # a missing judge must never break synthesis
-            self.reason = f"{type(exc).__name__}: {exc}"
-
-    def cer(self, audio_path: Path, reference_text: str) -> float | None:
-        """Readback CER against the rendered text; None means "no opinion"."""
-        self._ensure()
-        if self._model is None or self._cer is None:
-            return None
-        try:
-            identified = self._model.identify(str(audio_path), use_itn=False)
-            hypothesis = re.sub(r"<\|[^|]+\|>", "", str(identified.get("text") or "")).strip()
-            if not hypothesis:
-                return None
-            return float(self._cer(reference_text, hypothesis))
-        except Exception as exc:
-            self.reason = f"{type(exc).__name__}: {exc}"
-            return None
 
 
 READBACK_JUDGE = _ReadbackJudge()
 
 
-@dataclass(frozen=True)
-class Segment:
-    text: str
-    lang: str
-    pause_after_ms: int = 0
-    source_span: tuple[int, int] | None = None
 
 
 def default_config() -> dict[str, Any]:
@@ -184,15 +179,37 @@ def default_config() -> dict[str, Any]:
     }
 
 
+def _config_store() -> jsonstore.JsonStore:
+    """Store bound to the *current* ``CONFIG_FILE``.
+
+    Built per call (and not cached) on purpose: tests and the environment
+    picker repoint ``core.CONFIG_FILE``/``CONFIG_DIR`` at runtime, and the
+    ``JsonStore`` lock registry is keyed by path, so a fresh instance still
+    shares the same lock as every other writer of that file.
+    """
+    return jsonstore.JsonStore(
+        CONFIG_FILE,
+        default=default_config,
+        schema_version=CONFIG_SCHEMA_VERSION,
+        validate=lambda payload: isinstance(payload, dict),
+    )
+
+
 def load_config() -> dict[str, Any]:
-    with _CONFIG_LOCK:
-        cfg = default_config()
-        try:
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                cfg.update(data)
-        except (OSError, ValueError):
-            pass
+    """Effective configuration: defaults overlaid with ``config.json``.
+
+    A corrupt file is *preserved* by the store (``config.json.corrupt-<ts>``)
+    and reported on stderr instead of being silently replaced, so a user whose
+    settings vanish can still recover them.
+    """
+    cfg = default_config()
+    try:
+        stored = _config_store().read()
+        if isinstance(stored, dict):
+            # ``schema_version`` is bookkeeping, not user configuration.
+            cfg.update({key: value for key, value in stored.items() if key != "schema_version"})
+    except jsonstore.StoreCorruptError as exc:
+        logger.error("%s 读取失败，已按默认配置启动：%s", exc.path.name, exc)
     for field in ("text_lang", "prompt_lang"):
         if cfg.get(field) not in SUPPORTED_SYNTHESIS_LANGUAGES:
             cfg[field] = "zh"
@@ -207,53 +224,103 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(cfg: dict[str, Any]) -> dict[str, Any]:
-    with _CONFIG_LOCK:
-        merged = default_config()
-        merged.update(cfg)
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        temporary = CONFIG_FILE.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(CONFIG_FILE)
-        return merged
+    """Merge ``cfg`` over the defaults and persist atomically.
+
+    Update-in-place under the store's lock: a concurrent ``PUT /config`` from a
+    second tab can no longer interleave a read and a write and lose one of them.
+    """
+    merged = default_config()
+    merged.update(cfg)
+    _config_store().write(merged)
+    return merged
+
+
+def _history_store() -> jsonstore.JsonStore:
+    return jsonstore.JsonStore(
+        HISTORY_FILE,
+        default=list,
+        expose_version=False,
+        validate=lambda payload: isinstance(payload, list),
+    )
 
 
 def load_history() -> list[dict[str, Any]]:
+    """Recent synthesis runs, newest first.
+
+    A corrupt file is moved aside rather than reported as "no history": the old
+    behaviour made a torn write look like an empty history, and the next append
+    then persisted that emptiness.
+    """
     try:
-        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except (OSError, ValueError):
+        data = _history_store().read()
+    except jsonstore.StoreCorruptError as exc:
+        logger.error("%s 读取失败，历史按空处理：%s", exc.path.name, exc)
         return []
+    return data if isinstance(data, list) else []
 
 
 def _write_history(history: list[dict[str, Any]]) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    HISTORY_FILE.write_text(json.dumps(history[:200], ensure_ascii=False, indent=2), encoding="utf-8")
+    _history_store().write(list(history)[:HISTORY_LIMIT])
 
 
 def append_history(entries: list[dict[str, Any]]) -> None:
-    _write_history(entries + load_history())
+    """Prepend ``entries`` and trim, as one atomic read-modify-write.
+
+    The previous implementation was ``_write_history(entries + load_history())``:
+    a read and a write with no lock between them, so a concurrent reader landing
+    in another writer's truncation window saw ``[]`` and the whole history was
+    replaced by the new entries.
+    """
+    if not entries:
+        return
+    _history_store().update(lambda current: ([*(entries if isinstance(entries, list) else [entries]), *current][:HISTORY_LIMIT]))
 
 
 def clear_history() -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    HISTORY_FILE.write_text("[]", encoding="utf-8")
+    _write_history([])
 
 
 def _downloads_file() -> Path:
     return CONFIG_DIR / "downloads.json"
 
 
+def _downloads_store() -> jsonstore.JsonStore:
+    return jsonstore.JsonStore(
+        _downloads_file(),
+        default=dict,
+        expose_version=False,
+        validate=lambda payload: isinstance(payload, dict),
+    )
+
+
 def _load_downloads() -> dict[str, dict[str, str]]:
     try:
-        data = json.loads(_downloads_file().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+        data = _downloads_store().read()
+    except jsonstore.StoreCorruptError as exc:
+        logger.error("%s 读取失败，下载凭据按空处理：%s", exc.path.name, exc)
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _save_downloads(downloads: dict[str, dict[str, str]]) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _downloads_file().write_text(json.dumps(downloads, ensure_ascii=False, indent=2), encoding="utf-8")
+    _downloads_store().write(downloads)
+
+
+def _prune_downloads(downloads: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    """Drop credentials whose file is gone, then cap the map.
+
+    Every synthesis line used to add a permanent entry; the map had no removal
+    path at all, so it grew with the total number of files ever produced.
+    """
+    alive: dict[str, dict[str, str]] = {}
+    for download_id, entry in downloads.items():
+        target = entry.get("path")
+        if target and Path(target).is_file():
+            alive[download_id] = entry
+    if len(alive) > DOWNLOADS_LIMIT:
+        # dicts keep insertion order, so the tail is the newest.
+        alive = dict(list(alive.items())[-DOWNLOADS_LIMIT:])
+    return alive
 
 
 def _downloadable_path(path: str | Path) -> Path | None:
@@ -271,44 +338,64 @@ def register_download(path: str | Path) -> str:
     candidate = _downloadable_path(path)
     if candidate is None:
         raise ValueError("只能登记存在的音频或 ZIP 文件。")
-    with _DOWNLOADS_LOCK:
-        downloads = _load_downloads()
+    resolved = str(candidate)
+    issued: dict[str, str] = {}
+
+    def mutate(downloads: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
         for download_id, entry in downloads.items():
-            if entry.get("path") == str(candidate):
-                return download_id
+            if entry.get("path") == resolved:
+                issued["id"] = download_id
+                return downloads
         download_id = uuid.uuid4().hex
-        downloads[download_id] = {"path": str(candidate), "name": candidate.name}
-        _save_downloads(downloads)
-    return download_id
+        issued["id"] = download_id
+        downloads[download_id] = {"path": resolved, "name": candidate.name}
+        return _prune_downloads(downloads)
+
+    _downloads_store().update(mutate)
+    return issued["id"]
 
 
 def resolve_download(download_id: str) -> Path | None:
     if not re.fullmatch(r"[0-9a-f]{32}", download_id or ""):
         return None
-    with _DOWNLOADS_LOCK:
-        entry = _load_downloads().get(download_id)
+    entry = _load_downloads().get(download_id)
     return _downloadable_path(entry.get("path", "")) if entry else None
 
 
 def load_history_with_downloads() -> list[dict[str, Any]]:
-    """Attach exact-file credentials to legacy history entries when possible."""
+    """Attach exact-file credentials to legacy history entries when possible.
+
+    ``GET /api/history`` used to *write* the history file here, from a read it
+    had taken before issuing any credential — so a synthesis finishing at the
+    same moment could be erased. The patch now goes through ``update`` and only
+    touches entries that are still missing an id.
+    """
     history = load_history()
-    changed = False
-    for entry in history:
-        if entry.get("download_id"):
-            continue
+    missing = [str(entry.get("file") or "") for entry in history if not entry.get("download_id")]
+    if not missing:
+        return history
+
+    issued: dict[str, str] = {}
+    for path in missing:
         try:
-            entry["download_id"] = register_download(str(entry.get("file") or ""))
+            issued[path] = register_download(path)
         except ValueError:
-            entry["download_id"] = ""
-        changed = True
-    if changed:
-        _write_history(history)
-    return history
+            issued[path] = ""
+
+    def mutate(current: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        changed = False
+        for entry in current:
+            if entry.get("download_id"):
+                continue
+            key = str(entry.get("file") or "")
+            if key in issued:
+                entry["download_id"] = issued[key]
+                changed = True
+        return current if changed else None
+
+    return _history_store().update(mutate)
 
 
-def parse_lines(text: str | None) -> list[str]:
-    return [line.strip() for line in (text or "").splitlines() if line.strip() and not line.strip().startswith("#")]
 
 
 def environment_check(cfg: dict[str, Any]) -> list[dict[str, str]]:
@@ -394,434 +481,48 @@ def training_stats(cfg: dict[str, Any]) -> dict[str, float | int | None]:
     return stats
 
 
-@contextmanager
-def backend_cwd(root: str) -> Iterator[None]:
-    previous = os.getcwd()
-    try:
-        os.chdir(root)
-        yield
-    finally:
-        os.chdir(previous)
-
-
-def configured_accent_level(cfg: dict[str, Any]) -> str:
-    """Resolve the staged accent level, with the legacy toggle as a fallback.
-
-    ``auto_lightmid`` used to mean a global 的/是 rewrite. New callers should set
-    ``accent_level`` explicitly. When an old request supplies only the toggle, map it
-    to ``medium``: the unambiguous phrase rules still apply, but the global rewrite
-    that damaged intelligibility does not.
-    """
-    raw = cfg.get("accent_level")
-    if raw in {level.value for level in AccentLevel}:
-        return str(raw)
-    return "medium" if cfg.get("auto_lightmid") else "off"
-
-
-def render_with_plan(text: str, cfg: dict[str, Any]) -> PronunciationPlan:
-    """Build the staged pronunciation plan used for one line or segment.
-
-    This is the single construction point shared by text rendering and the output
-    manifest. ``configured_accent_level`` keeps the legacy ``auto_lightmid`` toggle
-    mapped to ``medium``, so old requests render exactly as they did before the
-    plan itself was persisted. The user lexicon (``user_lexicon.active_overrides``)
-    is consulted here so every Chinese line picks up dictionary corrections; a
-    lookup failure must never break synthesis, so it degrades to no overrides.
-    """
-    try:
-        from backend.services import user_lexicon
-
-        overrides = user_lexicon.active_overrides()
-    except Exception:
-        overrides = {}
-    return build_pronunciation_plan(
-        text,
-        language=str(cfg.get("text_lang", "zh")),
-        accent_level=configured_accent_level(cfg),
-        user_overrides=overrides,
-    )
-
-
-def render_synthesis_text(text: str, cfg: dict[str, Any]) -> str:
-    """Apply the staged pronunciation plan only to Chinese synthesis text."""
-    return render_with_plan(text, cfg).rendered_text
-
-
-def parse_language_segments(text: str, default_language: str = "zh") -> list[SynthesisSegment]:
-    """Parse explicit ``<en>...</en>`` markers while treating unmarked text as the default language."""
-    for match in UNKNOWN_LANGUAGE_TAG_PATTERN.finditer(text):
-        if match.group(1).lower() not in SUPPORTED_SYNTHESIS_LANGUAGES:
-            raise ValueError(f"不支持的语言标记：{match.group(0)}。支持：zh、yue、en、ja、ko。")
-
-    segments: list[SynthesisSegment] = []
-    cursor = 0
-    open_language: str | None = None
-
-    for match in LANGUAGE_TAG_PATTERN.finditer(text):
-        closing = bool(match.group(1))
-        language = match.group(2).lower() #把语言标记转换为小写，确保一致性
-        if open_language is None:
-            if closing:
-                raise ValueError(f"显式语言标记不匹配：{match.group(0)}。")
-            before = text[cursor : match.start()].strip()
-            if before:
-                segments.append((default_language, before))
-            open_language = language
-            cursor = match.end()
-            continue
-
-        if not closing:
-            raise ValueError("显式语言标记不能嵌套或交叉。")
-        if language != open_language:
-            raise ValueError(f"显式语言标记不匹配：期望 </{open_language}>，得到 {match.group(0)}。")
-        content = text[cursor : match.start()].strip()
-        if content:
-            segments.append((open_language, content))
-        cursor = match.end()
-        open_language = None
-
-    if open_language is not None:
-        raise ValueError(f"显式语言标记未闭合：<{open_language}> 需要有对应的 </{open_language}>。")
-
-    tail = text[cursor:].strip()
-    if tail:
-        segments.append((default_language, tail))
-    if not segments:
-        if LANGUAGE_TAG_PATTERN.search(text):
-            raise ValueError("显式语言标记内容不能为空。")
-        segments.append((default_language, text.strip()))
-
-    return _merge_fragment_segments(segments)
-
-
-def render_language_segments(segments: list[SynthesisSegment], cfg: dict[str, Any]) -> list[SynthesisSegment]:
-    """Apply staged pronunciation rules to each explicit language segment.
-
-    The pronunciation layer is language-aware and leaves non-Chinese text untouched,
-    so a mixed line no longer has to disable accent handling globally. That old
-    behaviour made one English fragment silently switch off pronunciation for the
-    whole line.
-    """
-    return [
-        (
-            language,
-            render_synthesis_text(segment, {**cfg, "text_lang": language}),
-        )
-        for language, segment in segments
-    ]
-
-
-def _merge_pronunciation_plans(
-    line: str, rendered: str, plans: list[PronunciationPlan]
-) -> PronunciationPlan:
-    """Fold per-segment plans into the single plan persisted for a source line.
-
-    Replacement offsets are rebased from the segment text into the full source
-    line. Segments appear in source order, so the first occurrence at or after the
-    previous segment is the correct anchor even when the line repeats itself. If a
-    punctuation merge made a segment no longer contiguous, that segment's offsets
-    stay relative to the segment text instead of being guessed.
-    """
-    languages = [plan.language for plan in plans]
-    chinese_plans = [plan for plan in plans if plan.lexicon_id != "none"]
-    replacements: list[dict[str, Any]] = []
-    cursor = 0
-    for plan in plans:
-        base = line.find(plan.source_text, cursor)
-        for item in plan.replacements:
-            merged = dict(item)
-            if base >= 0 and isinstance(merged.get("start"), int) and isinstance(merged.get("end"), int):
-                merged["start"] += base
-                merged["end"] += base
-            replacements.append(merged)
-        if base >= 0:
-            cursor = base + len(plan.source_text)
-    return PronunciationPlan(
-        source_text=line,
-        rendered_text=rendered,
-        language=languages[0] if len(set(languages)) == 1 else "mixed",
-        lexicon_id=chinese_plans[0].lexicon_id if chinese_plans else "none",
-        accent_pack_id=chinese_plans[0].accent_pack_id if chinese_plans else "none",
-        accent_intensity=max((plan.accent_intensity for plan in plans), default=0.0),
-        replacements=replacements,
-        protected_terms=list(
-            dict.fromkeys(term for plan in chinese_plans for term in plan.protected_terms)
-        ),
-    )
-
-
-def render_line_with_plan(
-    line: str, cfg: dict[str, Any]
-) -> tuple[list[SynthesisSegment], PronunciationPlan, str]:
-    """Render one source line, building each segment's plan exactly once.
-
-    The aggregate plan covers the whole line, so downstream manifest writers get a
-    ``rendered_text`` that is byte-for-byte the text handed to the engine.
-    """
-    segments = parse_language_segments(line, cfg.get("text_lang", "zh"))
-    plans = [
-        render_with_plan(segment, {**cfg, "text_lang": language})
-        for language, segment in segments
-    ]
-    rendered_segments = [
-        (language, plan.rendered_text)
-        for (language, _), plan in zip(segments, plans)
-    ]
-    rendered = " ".join(segment for _, segment in rendered_segments)
-    return rendered_segments, _merge_pronunciation_plans(line, rendered, plans), rendered
-
-
-_WORDLIKE_ENGLISH_ABBREVIATIONS = frozenset({
-    "LASER",
-    "NASA",
-    "NATO",
-    "RADAR",
-    "SCUBA",
-    "SONAR",
-    "UNESCO",
-})
-_DOTTED_INITIALISM_PATTERN = re.compile(r"(?<![A-Za-z])(?:[A-Z]\.){2,}(?![A-Za-z])")
-_SPACED_INITIALISM_PATTERN = re.compile(r"(?<![A-Za-z])(?:[A-Z]\s+){1,}[A-Z](?![A-Za-z])")
-_HYPHENATED_INITIALISM_PATTERN = re.compile(r"(?<![A-Za-z])([A-Z]{2,})-([0-9]+)(?![A-Za-z])")
-_CAPITAL_INITIALISM_PATTERN = re.compile(r"(?<![A-Za-z])([A-Z]{2,})(?![A-Za-z])")
-
-
-def _spell_english_initialism(value: str) -> str:
-    letters = re.findall(r"[A-Z]", value)
-    return " ".join(letters)
-
-
-def english_pronunciation_hint(text: str) -> str:
-    """Build an internal English pronunciation hint without changing surface text."""
-    hinted = re.sub(r"\bwi[\s-]*fi\b", "wifi", text, flags=re.IGNORECASE)
-
-    def replace_initialism(match: re.Match[str]) -> str:
-        value = match.group(0)
-        letters = "".join(re.findall(r"[A-Z]", value))
-        if letters in _WORDLIKE_ENGLISH_ABBREVIATIONS:
-            # GPT-SoVITS splits pure uppercase words before G2P; lowercase
-            # keeps a word-like exception intact in the internal hint.
-            result = value.lower()
-            tail = hinted[match.end() :].lstrip()
-            return result + "," if tail and re.match(r"[A-Za-z0-9]", tail) else result
-        spelled = _spell_english_initialism(value)
-        tail = hinted[match.end() :].lstrip()
-        return spelled + "," if tail and re.match(r"[A-Za-z0-9]", tail) else spelled
-
-    def replace_hyphenated(match: re.Match[str]) -> str:
-        spelled = _spell_english_initialism(match.group(1)) + " " + match.group(2)
-        tail = hinted[match.end() :].lstrip()
-        return spelled + "," if tail and re.match(r"[A-Za-z]", tail) else spelled
-
-    hinted = _DOTTED_INITIALISM_PATTERN.sub(replace_initialism, hinted)
-    hinted = _SPACED_INITIALISM_PATTERN.sub(replace_initialism, hinted)
-    hinted = _HYPHENATED_INITIALISM_PATTERN.sub(replace_hyphenated, hinted)
-    return _CAPITAL_INITIALISM_PATTERN.sub(replace_initialism, hinted)
-
-
-def normalize_english_pronunciations(text: str) -> str:
-    """Backward-compatible name for the internal English pronunciation hint."""
-    return english_pronunciation_hint(text)
-
-
-def normalize_mixed_pronunciation_text(text: str, *, is_final: bool) -> str:
-    """Remove only non-final terminal punctuation from the engine pronunciation text."""
-    if is_final:
-        return text
-    normalized = text.rstrip(_MIXED_TERMINAL_PUNCTUATION).rstrip()
-    return normalized or text
-
-
-def to_engine_segments(
-    segments: list[SynthesisSegment | Segment], *, boundary_pause_ms: int = 0
-) -> list[dict[str, Any]]:
-    """Convert validated application segments into the engine's internal IR."""
-    engine_segments: list[dict[str, Any]] = []
-    non_empty_count = sum(1 for segment in segments if (segment.text if isinstance(segment, Segment) else segment[1]).strip())
-    emitted_count = 0
-    for segment in segments:
-        if isinstance(segment, Segment):
-            language, text = segment.lang, segment.text
-            pause_after_ms = segment.pause_after_ms
-        else:
-            language, text = segment
-            pause_after_ms = 0
-        language = str(language).lower()
-        if language not in SUPPORTED_SYNTHESIS_LANGUAGES:
-            raise ValueError(f"不支持的语言片段：{language}。支持：zh、yue、en、ja、ko。")
-        text = str(text).strip()
-        if text:
-            base_pronunciation_text = (
-                english_pronunciation_hint(text) if language == "en" else text
-            )
-            is_final = emitted_count == non_empty_count - 1
-            pronunciation_text = normalize_mixed_pronunciation_text(
-                base_pronunciation_text,
-                is_final=is_final,
-            )
-            engine_segments.append({
-                "lang": language,
-                "text": text,
-                "pronunciation_text": pronunciation_text,
-                "pause_after_ms": int(pause_after_ms)
-                    if pause_after_ms
-                    else int(boundary_pause_ms) if not is_final else 0,
-            })
-            emitted_count += 1
-    if not engine_segments:
-        raise ValueError("显式语言片段内容不能为空。")
-    return engine_segments
-
-
-def has_pronounceable_text(language: str, text: str) -> bool:
-    """Check for script content that can survive that language's G2P pipeline."""
-    if language == "en":
-        return bool(re.search(r"[A-Za-z0-9]", text))
-    if language == "ja":
-        return bool(re.search(r"[A-Za-z0-9\u3040-\u30ff\u3400-\u9fff\uff66-\uff9d]", text))
-    if language == "ko":
-        return bool(re.search(r"[A-Za-z0-9\uac00-\ud7af]", text))
-    return bool(re.search(r"[A-Za-z0-9\u3400-\u9fff]", text))
-
-
-def _normalize_fragment_punctuation(text: str, language: str) -> str:
-    if language in {"zh", "yue", "ja"}:
-        return text
-    return text.translate(_CJK_PUNCTUATION_MAP)
-
-
-def _merge_fragment_segments(segments: list[SynthesisSegment]) -> list[SynthesisSegment]:
-    """Attach punctuation-only fragments to a neighboring spoken segment.
-
-    GPT-SoVITS returns an empty 16 kHz placeholder for some punctuation-only
-    requests, so those fragments must never be inferred independently.
-    """
-    spoken: list[SynthesisSegment] = []
-    pending_prefix = ""
-
-    for language, segment in segments:
-        if not has_pronounceable_text(language, segment):
-            punctuation = _normalize_fragment_punctuation(segment, language)
-            if spoken:
-                previous_language, previous_text = spoken[-1]
-                normalized = _normalize_fragment_punctuation(punctuation, previous_language)
-                spoken[-1] = (previous_language, previous_text + normalized)
-            else:
-                pending_prefix += punctuation
-            continue
-
-        if pending_prefix:
-            normalized = _normalize_fragment_punctuation(pending_prefix, language)
-            segment = normalized + segment
-            pending_prefix = ""
-        spoken.append((language, segment))
-
-    if pending_prefix and spoken:
-        language, text = spoken[-1]
-        spoken[-1] = (language, text + _normalize_fragment_punctuation(pending_prefix, language))
-    if not spoken:
-        return segments
-    return spoken
-
-
-def deterministic_language_seed(language: str, text: str, cfg: dict[str, Any]) -> int:
-    """Keep repeated short cross-language fragments away from one-off bad samples."""
-    payload = "\0".join((
-        language,
-        text,
-        str(cfg.get("ref_audio", "")),
-        str(cfg.get("ref_text", "")),
-        str(cfg.get("gpt_model", "")),
-        str(cfg.get("sovits_model", "")),
-    ))
-    return zlib.crc32(payload.encode("utf-8")) & 0xFFFFFFFF
-
-
-def expected_segment_duration(text: str, language: str, speed: float) -> float:
-    """Return a conservative floor used only to reject obviously truncated samples."""
-    cjk_units = len(re.findall(r"[\u3400-\u9fff\u3040-\u30ff\uff66-\uff9d\uac00-\ud7af]", text))
-    if language == "en":
-        syllables = sum(
-            max(1, len(re.findall(r"[aeiouy]+", word)))
-            for word in re.findall(r"[A-Za-z]+", text)
-        )
-        return max(.55, .40 * syllables) / max(.1, speed)
-    english_syllables = sum(
-        max(1, len(re.findall(r"[aeiouy]+", word)))
-        for word in re.findall(r"[A-Za-z]+", text)
-    )
-    if language in {"zh", "yue", "ja", "ko", "auto", "auto_yue"}:
-        return max(.55, .18 * cjk_units + .40 * english_syllables) / max(.1, speed)
-    return max(.35, .18 * cjk_units) / max(.1, speed)
-
-
-def trim_segment_edges(audio: Any, sample_rate: int, keep_ms: int = 45, threshold_db: float = -45) -> Any:
-    """Remove accumulated lead-in/tail silence before joining independent clips."""
-    audio = np.asarray(audio)
-    if audio.size == 0:
-        return audio
-
-    reference = float(np.iinfo(audio.dtype).max) if np.issubdtype(audio.dtype, np.integer) else 1.0
-    threshold = reference * 10 ** (threshold_db / 20)
-    frame_size = max(1, int(sample_rate * .01))
-    keep_frame_count = max(1, int(sample_rate * keep_ms / 1000 / frame_size))
-    squares = np.asarray(audio, dtype=np.float64) ** 2
-    frame_count = max(1, (len(audio) + frame_size - 1) // frame_size)
-    padded = np.pad(squares, (0, frame_count * frame_size - len(audio)))
-    frame_energy = padded.reshape(frame_count, frame_size).mean(axis=1)
-    active_frames = np.flatnonzero(frame_energy > threshold * threshold)
-    if not len(active_frames):
-        return audio[: min(len(audio), keep_frame_count * frame_size)]
-
-    start = max(0, (active_frames[0] - keep_frame_count) * frame_size)
-    end = min(len(audio), (active_frames[-1] + keep_frame_count + 1) * frame_size)
-    trimmed = audio[start:end].copy()
-    fade_size = min(len(trimmed) // 2, max(1, int(sample_rate * .008)))
-    if audio.dtype.kind == "f":
-        trimmed[:fade_size] *= np.linspace(0, 1, fade_size, dtype=audio.dtype)
-        trimmed[-fade_size:] *= np.linspace(1, 0, fade_size, dtype=audio.dtype)
-    return trimmed
-
-
-def compose_mixed_language_text(segments: list[SynthesisSegment]) -> str:
-    """Join marked fragments for one upstream mixed-language inference pass."""
-    cleaned = [(language, segment.strip()) for language, segment in segments if segment.strip()]
-    if not cleaned:
-        return ""
-
-    pause_punctuation = set("，。！？；：,.!?;:")
-    parts: list[str] = [cleaned[0][1]]
-    previous_language = cleaned[0][0]
-    for language, segment in cleaned[1:]:
-        if language != previous_language:
-            if previous_language == "en" and segment[0] in {"，", ","}:
-                if parts[-1][-1] not in pause_punctuation:
-                    parts[-1] += ","
-                segment = segment[1:].lstrip()
-            elif segment[0] not in pause_punctuation and parts[-1][-1] not in pause_punctuation:
-                parts[-1] += ","
-        elif language == "en" and not parts[-1].endswith((" ", "\t")):
-            parts[-1] += " "
-        parts.append(segment)
-        previous_language = language
-    return "".join(parts)
-
-
-def validate_synthesis_language_text(text: str, cfg: dict[str, Any]) -> None:
-    """Reject text that a target-language G2P pipeline cannot read instead of emitting silence."""
-    language = cfg.get("text_lang", "zh")
-    lines = parse_lines(text)
-    if not lines:
-        return
-
-    for line in lines:
-        for segment_language, segment in parse_language_segments(line, language):
-            if segment_language == "en" and not re.search(r"[A-Za-z0-9]", segment):
-                raise ValueError("标记为英语的台词没有英文字母。模型不会自动翻译。")
-            if segment_language == "ja" and not re.search(r"[\u3040-\u30ff\uff66-\uff9d]", segment):
-                raise ValueError("标记为日语的台词没有假名。模型不会自动翻译。")
-            if segment_language == "ko" and not re.search(r"[\uac00-\ud7af]", segment):
-                raise ValueError("标记为韩语的台词没有韩文字母。模型不会自动翻译。")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def save_reference_audio(filename: str, stream: Any) -> Path:
@@ -930,259 +631,19 @@ def apply_pronunciation_patch(root: str | Path, filename: str, stream: Any) -> s
             temporary.unlink(missing_ok=True)
 
 
-class SynthesisBackend:
-    """Owns the process-local pure GPT-SoVITS pipeline and loaded model pair."""
-
-    def __init__(self) -> None:
-        self._lock = threading.RLock()
-        self._root: str | None = None
-        self._pipeline: Any = None
-        self._loaded: tuple[str | None, str | None] = (None, None)
-        self._inference_calls = threading.local()
-        self._warmup = {"status": "idle", "message": "模型尚未预热。", "error": ""}
-
-    def warmup_status(self) -> dict[str, str]:
-        with self._lock:
-            return dict(self._warmup)
-
-    def start_warmup(self, cfg: dict[str, Any]) -> dict[str, str]:
-        with self._lock:
-            if self._warmup["status"] == "warming":
-                return dict(self._warmup)
-            self._warmup = {"status": "warming", "message": "模型预热中。", "error": ""}
-
-        def run() -> None:
-            try:
-                self.ensure(cfg)
-            except GpuBusyTimeout as exc:
-                # A batch or training job owns the card; that is not a broken
-                # configuration, so report it as idle and let the next call retry.
-                with self._lock:
-                    self._warmup = {
-                        "status": "idle",
-                        "message": "GPU 正忙，预热稍后再试。",
-                        "error": str(exc),
-                    }
-            except Exception as exc:
-                with self._lock:
-                    self._warmup = {
-                        "status": "failed",
-                        "message": "模型预热失败，请检查设置后重试。",
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-            else:
-                with self._lock:
-                    self._warmup = {"status": "ready", "message": "模型已就绪。", "error": ""}
-
-        threading.Thread(target=run, daemon=True, name="synthesis-warmup").start()
-        return self.warmup_status()
-
-    def ensure(self, cfg: dict[str, Any]) -> None:
-        """Load or swap the model pair while holding the GPU lease.
-
-        ``ensure`` can reload weights, so it must never run outside a lease: a
-        warm-up retry would otherwise swap models under a running batch. The lease
-        is re-entrant, so callers that already hold it pay nothing.
-        """
-        with GPU_ARBITER.lease("model_load", label="加载 GPT-SoVITS 模型"):
-            self._ensure_locked(cfg)
-
-    def _ensure_locked(self, cfg: dict[str, Any]) -> None:
-        root = os.path.abspath(str(cfg["gpt_sovits_root"]))
-        with self._lock:
-            pair = (str(cfg["gpt_model"]), str(cfg["sovits_model"]))
-            if self._pipeline is None:
-                if root not in sys.path:
-                    sys.path.insert(0, root)
-                engine_path = os.path.join(root, "GPT_SoVITS")
-                if engine_path not in sys.path:
-                    sys.path.insert(0, engine_path)
-                # The application also has a top-level ``tools`` package. Add
-                # GPT-SoVITS's sibling modules to that package so imports such
-                # as ``tools.i18n`` resolve without replacing app utilities.
-                project_tools = sys.modules.get("tools")
-                project_tools_path = getattr(project_tools, "__path__", None)
-                engine_tools_path = os.path.join(root, "tools")
-                if project_tools_path is not None and engine_tools_path not in project_tools_path:
-                    project_tools_path.append(engine_tools_path)
-                with backend_cwd(root):
-                    module = importlib.import_module("GPT_SoVITS.TTS_infer_pack.TTS")
-                    device = "cpu"
-                    try:
-                        import torch
-
-                        device = "cuda" if torch.cuda.is_available() else "cpu"
-                    except Exception:
-                        pass
-                    pipeline_config = {
-                        "device": device,
-                        "is_half": device != "cpu" and os.environ.get("GPT_SOVITS_IS_HALF", "1") == "1",
-                        "version": "v2Pro",
-                        "t2s_weights_path": pair[0],
-                        "vits_weights_path": pair[1],
-                        "cnhuhbert_base_path": "GPT_SoVITS/pretrained_models/chinese-hubert-base",
-                        "bert_base_path": "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
-                    }
-                    self._pipeline = module.TTS(module.TTS_Config({"custom": pipeline_config}))
-                self._root = root
-                self._loaded = pair
-            elif self._root != root:
-                raise RuntimeError("已加载其他 GPT-SoVITS 环境，请重启 API 服务后再切换环境。")
-            if pair != self._loaded:
-                with backend_cwd(root):
-                    self._pipeline.init_t2s_weights(pair[0])
-                    self._pipeline.init_vits_weights(pair[1])
-                self._loaded = pair
-
-    def synth_one(
-        self,
-        cfg: dict[str, Any],
-        text: str,
-        semantic_token_cb: Any | None = None,
-        text_segments: list[dict[str, Any]] | None = None,
-    ) -> tuple[Any, int]:
-        with self._lock:
-            if self._pipeline is None:
-                raise RuntimeError("推理后端未就绪，请先初始化模型。")
-            with backend_cwd(str(cfg["gpt_sovits_root"])):
-                request = {
-                    "text": text,
-                    "text_lang": cfg.get("text_lang", "zh"),
-                    "ref_audio_path": cfg["ref_audio"],
-                    "prompt_text": cfg["ref_text"],
-                    "prompt_lang": cfg.get("prompt_lang", "zh"),
-                    "top_k": int(cfg["top_k"]),
-                    "top_p": float(cfg["top_p"]),
-                    "temperature": float(cfg["temperature"]),
-                    "text_split_method": "cut0",
-                    "batch_size": 1,
-                    "speed_factor": float(cfg["speed"]),
-                    "fragment_interval": float(cfg["pause_second"]),
-                    "sample_steps": int(cfg["sample_steps"]),
-                    **({"seed": int(cfg["seed"])} if "seed" in cfg else {}),
-                    "parallel_infer": False,
-                    "semantic_token_callback": semantic_token_cb,
-                }
-                if cfg.get("mixed_eos_floor") is not None:
-                    request["mixed_eos_floor"] = max(0, int(cfg["mixed_eos_floor"]))
-                if cfg.get("mixed_token_cap") is not None:
-                    request["mixed_token_cap"] = max(0, int(cfg["mixed_token_cap"]))
-                if text_segments is not None:
-                    request["text_lang"] = "segment_mixed"
-                    request["text_segments"] = text_segments
-                self._inference_calls.count = getattr(self._inference_calls, "count", 0) + 1
-                result = self._pipeline.run(request)
-                last = list(result)[-1]
-                return last[1], last[0]
-
-    def _synthesize_seeded(
-        self,
-        cfg: dict[str, Any],
-        language: str,
-        text: str,
-        semantic_token_cb: Any | None = None,
-        seed: int | None = None,
-    ) -> tuple[Any, int, int, int]:
-        base_seed = deterministic_language_seed(language, text, cfg) if seed is None else seed
-        synthesis_text = english_pronunciation_hint(text) if language == "en" else text
-        expected_duration = expected_segment_duration(synthesis_text, language, float(cfg.get("speed", 1)))
-        attempts: list[tuple[float, Any, int, int]] = []
-
-        for attempt in range(3):
-            attempt_cfg = {
-                **cfg,
-                "text_lang": language,
-                "seed": (base_seed + attempt * 104_729) & 0xFFFFFFFF,
-            }
-            attempt_token_count = 0
-            attempt_frame_rate = 0
-
-            def report_segment_token(token_count: int, frame_rate: int) -> None:
-                nonlocal attempt_token_count, attempt_frame_rate
-                try:
-                    attempt_token_count = max(attempt_token_count, int(token_count))
-                    attempt_frame_rate = max(attempt_frame_rate, int(frame_rate))
-                except (TypeError, ValueError):
-                    return
-
-            audio, sample_rate = self.synth_one(
-                attempt_cfg,
-                synthesis_text,
-                semantic_token_cb=report_segment_token,
-            )
-            sample_rate = int(sample_rate)
-            if sample_rate <= 0:
-                raise ValueError("模型返回了无效采样率。")
-            audio = np.asarray(audio)
-            attempts.append((len(audio) / sample_rate, audio, attempt_token_count, attempt_frame_rate))
-            if attempts[-1][0] >= expected_duration * _ACCEPTABLE_SEGMENT_DURATION_RATIO:
-                break
-
-        acceptable = [item for item in attempts if item[0] >= expected_duration * _ACCEPTABLE_SEGMENT_DURATION_RATIO]
-        if acceptable:
-            _, audio, token_count, frame_rate = acceptable[0]
-        else:
-            _, audio, token_count, frame_rate = max(attempts, key=lambda item: item[0])
-        if callable(semantic_token_cb):
-            semantic_token_cb(token_count, frame_rate)
-        return audio, sample_rate, token_count, frame_rate
-
-    def synth_segments(
-        self,
-        cfg: dict[str, Any],
-        segments: list[tuple[str, str]],
-        semantic_token_cb: Any | None = None,
-    ) -> tuple[Any, int]:
-        """Synthesize marked fragments in one mixed pass when languages differ."""
-        self._inference_calls.count = 0
-        languages = {language for language, _ in segments}
-        if len(segments) > 1 and len(languages) > 1:
-            engine_segments = to_engine_segments(
-                segments, boundary_pause_ms=MIXED_LANGUAGE_BOUNDARY_PAUSE_MS
-            )
-            try:
-                return self.synth_one(
-                    {**cfg, "text_lang": "segment_mixed"},
-                    "",
-                    semantic_token_cb=semantic_token_cb,
-                    text_segments=engine_segments,
-                )
-            finally:
-                if self._inference_calls.count == 0:
-                    self._inference_calls.count = 1
-
-        audio_parts: list[Any] = []
-        sample_rate: int | None = None
-        token_offset = 0
-        line_seed = int(cfg["seed"]) if "seed" in cfg else deterministic_language_seed(
-            "line", " ".join(text for _, text in segments), cfg
-        )
-
-        for language, text in segments:
-            def report_offset_token(token_count: int, frame_rate: int) -> None:
-                if callable(semantic_token_cb):
-                    semantic_token_cb(token_offset + token_count, frame_rate)
-
-            audio, segment_sample_rate, segment_token_count, segment_frame_rate = self._synthesize_seeded(
-                cfg, language, text, report_offset_token, seed=line_seed
-            )
-            audio = trim_segment_edges(audio, segment_sample_rate)
-            if sample_rate is None:
-                sample_rate = segment_sample_rate
-            elif segment_sample_rate != sample_rate:
-                raise RuntimeError("显式语言标记分段返回了不一致的采样率。")
-            audio_parts.append(audio)
-            token_offset += segment_token_count
-
-        if sample_rate is None or not audio_parts:
-            raise ValueError("显式语言标记内容不能为空。")
-        return np.concatenate(audio_parts), sample_rate
 
 
 SYNTHESIS_BACKEND = SynthesisBackend()
 
 
 def save_audio(audio: Any, sample_rate: int, output_dir: Path, base: str) -> Path:
+    """Write one take, preferring MP3 over WAV when ffmpeg can do it.
+
+    The conversion runs while the caller holds the exclusive GPU lease, so it
+    must be bounded: a wedged ffmpeg (locked file, antivirus scan, network
+    share) used to block the worker thread forever and leak the lease, after
+    which every later job failed with "GPU 正被占用" until a restart.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     wav = output_dir / f"{base}.wav"
     sf.write(str(wav), audio, sample_rate)
@@ -1191,10 +652,21 @@ def save_audio(audio: Any, sample_rate: int, output_dir: Path, base: str) -> Pat
         return wav
     mp3 = output_dir / f"{base}.mp3"
     try:
-        subprocess.run([ffmpeg, "-y", "-i", str(wav), "-b:a", "192k", str(mp3)], capture_output=True, check=True)
+        subprocess.run(
+            [ffmpeg, "-y", "-i", str(wav), "-b:a", "192k", str(mp3)],
+            capture_output=True,
+            check=True,
+            timeout=FFMPEG_TIMEOUT_SECONDS,
+        )
         wav.unlink(missing_ok=True)
         return mp3
-    except (OSError, subprocess.CalledProcessError):
+    except subprocess.TimeoutExpired:
+        logger.warning("ffmpeg 转码超时（%ss），保留 WAV：%s", FFMPEG_TIMEOUT_SECONDS, wav.name)
+        mp3.unlink(missing_ok=True)
+        return wav
+    except (OSError, subprocess.CalledProcessError) as exc:
+        logger.warning("ffmpeg 转码失败，保留 WAV：%s（%s）", wav.name, exc)
+        mp3.unlink(missing_ok=True)
         return wav
 
 
@@ -1222,73 +694,10 @@ def _write_output_provenance_quietly(path: Path, cfg: dict[str, Any], text: str)
         return ""
 
 
-def _emit_progress(progress_cb: Any | None, payload: dict[str, Any]) -> None:
-    if callable(progress_cb):
-        progress_cb(dict(payload))
 
 
-def _emit_event(event_cb: Any | None, event_type: str, **payload: Any) -> None:
-    if callable(event_cb):
-        event_cb({"type": event_type, **payload})
 
 
-def build_pronunciation_manifest(
-    cfg: dict[str, Any],
-    plans: list[PronunciationPlan],
-    outputs: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Summarise the per-line pronunciation plans into the output manifest.
-
-    The manifest is intentionally redundant with each output's ``pronunciation``
-    block: readers who only have the output directory must be able to audit what
-    text was actually sent to the engine without parsing the job snapshots.
-    """
-    lexicon_id = "none"
-    accent_pack_id = "none"
-    accent_intensity = 0.0
-    protected_terms: list[str] = []
-    for plan in plans:
-        accent_intensity = max(accent_intensity, plan.accent_intensity)
-        if plan.lexicon_id == "none":
-            continue
-        if lexicon_id == "none":
-            lexicon_id = plan.lexicon_id
-            accent_pack_id = plan.accent_pack_id
-        for term in plan.protected_terms:
-            if term not in protected_terms:
-                protected_terms.append(term)
-
-    manifest_lines: list[dict[str, Any]] = []
-    for position, output in enumerate(outputs):
-        pronunciation = output.get("pronunciation")
-        if not isinstance(pronunciation, dict):
-            pronunciation = plans[position].to_dict() if position < len(plans) else {}
-        manifest_lines.append({
-            "index": int(output.get("output_index", position)) + 1,
-            "source_text": str(pronunciation.get("source_text") or output.get("text") or ""),
-            "rendered_text": str(output.get("rendered_text") or pronunciation.get("rendered_text") or ""),
-            "language": str(pronunciation.get("language") or ""),
-            "lexicon_id": str(pronunciation.get("lexicon_id") or "none"),
-            "accent_pack_id": str(pronunciation.get("accent_pack_id") or "none"),
-            "accent_intensity": float(pronunciation.get("accent_intensity") or 0.0),
-            "protected_terms": list(pronunciation.get("protected_terms") or []),
-            "replacements": [dict(item) for item in (pronunciation.get("replacements") or [])],
-            "file": str(output.get("file") or ""),
-            "error": str(output.get("error") or ""),
-        })
-
-    return {
-        "schema_version": PRONUNCIATION_MANIFEST_SCHEMA_VERSION,
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "accent_level": configured_accent_level(cfg),
-        "text_lang": str(cfg.get("text_lang", "zh")),
-        "lexicon_id": lexicon_id,
-        "accent_pack_id": accent_pack_id,
-        "accent_intensity": accent_intensity,
-        "protected_terms": protected_terms,
-        "line_count": len(manifest_lines),
-        "lines": manifest_lines,
-    }
 
 
 def write_pronunciation_manifest(destination: Path, manifest: dict[str, Any]) -> Path:
@@ -1305,24 +714,47 @@ def write_pronunciation_manifest(destination: Path, manifest: dict[str, Any]) ->
     return target
 
 
+# --------------------------------------------------------------------------- #
+# Synthesis facade
+# --------------------------------------------------------------------------- #
+# ``synthesize_lines`` and its locked core live in :mod:`backend.pipeline.synthesis`.
+# These two wrappers are the only adapters: they hand the pipeline the facade's
+# *current* collaborators, so ``patch.object(core, "SYNTHESIS_BACKEND")``,
+# ``patch.object(core, "READBACK_JUDGE")``, ``patch.object(core, "save_audio")``
+# and friends all keep taking effect.
+
+
+def _synthesis_hooks() -> _pipeline.SynthesisHooks:
+    return _pipeline.SynthesisHooks(
+        backend=SYNTHESIS_BACKEND,
+        judge=READBACK_JUDGE,
+        save_audio=save_audio,
+        new_output_dir=new_output_dir,
+        append_history=append_history,
+        register_download=register_download,
+        write_manifest=write_pronunciation_manifest,
+        write_provenance=_write_output_provenance_quietly,
+    )
+
+
 def synthesize_lines(
     cfg: dict[str, Any],
     text: str,
     output_dir: Path | None = None,
     progress_cb: Any | None = None,
     event_cb: Any | None = None,
+    should_stop: Any | None = None,
 ) -> dict[str, Any]:
-    lines = parse_lines(text)
-    if not lines:
-        raise ValueError("台词为空，请先输入内容。")
-    validate_synthesis_language_text(text, cfg)
-    # Hold the GPU for the whole batch, including ``ensure``: a second job that
-    # swapped weights between two lines would silently change the voice of the
-    # take in progress. The validation above stays outside the lease so a bad
-    # request fails immediately instead of queueing behind a long job. A busy
-    # card raises GpuBusyTimeout, which callers surface as a user-facing error.
-    with GPU_ARBITER.lease("synthesis", job_id="", label=f"合成 {len(lines)} 句"):
-        return _synthesize_lines_locked(cfg, lines, output_dir, progress_cb, event_cb)
+    """Synthesise every line in ``text`` (see :mod:`backend.pipeline.synthesis`)."""
+    return _pipeline.synthesize_lines(
+        cfg,
+        text,
+        output_dir,
+        progress_cb,
+        event_cb,
+        should_stop,
+        hooks=_synthesis_hooks(),
+    )
 
 
 def _synthesize_lines_locked(
@@ -1331,290 +763,15 @@ def _synthesize_lines_locked(
     output_dir: Path | None = None,
     progress_cb: Any | None = None,
     event_cb: Any | None = None,
+    should_stop: Any | None = None,
 ) -> dict[str, Any]:
     """Synthesise already-validated lines; the caller must hold the GPU lease."""
-    SYNTHESIS_BACKEND.ensure(cfg)
-    destination = output_dir or new_output_dir()
-    outputs: list[dict[str, Any]] = []
-    _emit_progress(progress_cb, {
-        "status": "running",
-        "phase": "prepare",
-        "current": 0,
-        "total": len(lines),
-        "completed": 0,
-        "current_text": "",
-        "rendered_text": "",
-        "output_dir": str(destination),
-        "outputs": [],
-        "error": "",
-    })
-    total_segment_count = 0
-    total_acoustic_inference_calls = 0
-    used_explicit_mixed = False
-    line_plans: list[PronunciationPlan] = []
-    for index, line in enumerate(lines, 1):
-        rendered_segments, line_plan, rendered = render_line_with_plan(line, cfg)
-        line_plans.append(line_plan)
-        line_segment_count = len(rendered_segments)
-        line_is_explicit_mixed = line_segment_count > 1 and len({language for language, _ in rendered_segments}) > 1
-        line_synthesis_mode = "single_pass_explicit" if line_is_explicit_mixed else "legacy_single"
-        total_segment_count += line_segment_count
-        used_explicit_mixed = used_explicit_mixed or line_is_explicit_mixed
-        base = f"{index:03d}_{safe_name(line)}"
-        _emit_progress(progress_cb, {
-            "status": "running",
-            "phase": "generating",
-            "current": index,
-            "total": len(lines),
-            "completed": len([item for item in outputs if item["file"]]),
-            "current_text": line,
-            "rendered_text": rendered,
-            "output_dir": str(destination),
-            "outputs": list(outputs),
-            "error": "",
-            "synthesis_mode": line_synthesis_mode,
-            "segment_count": line_segment_count,
-            "acoustic_inference_calls": 0,
-        })
-        semantic_token_count = 0
-        semantic_frame_rate = 0
-        last_token_event_at = 0.0
-        last_emitted_token = -1
-
-        def report_semantic_token(token_count: int, frame_rate: int) -> None:
-            nonlocal semantic_token_count, semantic_frame_rate, last_token_event_at, last_emitted_token
-            try:
-                semantic_token_count = max(semantic_token_count, int(token_count))
-                semantic_frame_rate = max(semantic_frame_rate, int(frame_rate))
-            except (TypeError, ValueError):
-                return
-            now = time.monotonic()
-            if semantic_token_count == last_emitted_token or (last_emitted_token >= 0 and now - last_token_event_at < 1 / 12):
-                return
-            last_emitted_token = semantic_token_count
-            last_token_event_at = now
-            _emit_event(
-                event_cb,
-                "semantic_token",
-                output_index=index - 1,
-                token_index=semantic_token_count,
-                semantic_frame_rate=semantic_frame_rate,
-            )
-
-        try:
-            # Take selection: judge the delivered audio by readback, retry with a
-            # derived seed only on catastrophes. Take 0 always uses the caller's
-            # cfg verbatim, so behaviour for good takes is byte-identical to the
-            # single-shot path.
-            line_acoustic_inference_calls = 0
-            take_eligible = (
-                bool(cfg.get("take_selection", True))
-                and not line_is_explicit_mixed
-                and str(cfg.get("text_lang") or "zh") == "zh"
-                and _judgeable_char_count(rendered or line) >= _TAKE_SELECTION_MIN_JUDGE_CHARS
-            )
-            base_line_seed = (
-                int(cfg["seed"])
-                if "seed" in cfg
-                else deterministic_language_seed("line", rendered or line, cfg)
-            )
-            max_takes = _TAKE_SELECTION_MAX_TAKES if take_eligible else 1
-            candidates: list[dict[str, Any]] = []
-            for take_index in range(max_takes):
-                take_cfg = (
-                    cfg
-                    if take_index == 0
-                    else {**cfg, "seed": (base_line_seed + take_index * _TAKE_SEED_STRIDE) & 0xFFFFFFFF}
-                )
-                semantic_token_count = 0
-                semantic_frame_rate = 0
-                audio, sample_rate = SYNTHESIS_BACKEND.synth_segments(
-                    take_cfg, rendered_segments, semantic_token_cb=report_semantic_token
-                )
-                line_acoustic_inference_calls += max(
-                    1 if line_is_explicit_mixed else 0,
-                    int(getattr(SYNTHESIS_BACKEND._inference_calls, "count", 0)),
-                )
-                produced_seconds = len(np.asarray(audio)) / float(sample_rate or 1)
-                expected_seconds = expected_segment_duration(
-                    rendered or line, "zh", float(cfg.get("speed", 1))
-                )
-                short_take = produced_seconds < _short_output_floor(expected_seconds, rendered or line)
-                take_cer: float | None = None
-                if take_eligible:
-                    destination.mkdir(parents=True, exist_ok=True)
-                    take_wav = destination / f".take_{index:03d}_{take_index}.wav"
-                    try:
-                        sf.write(str(take_wav), np.asarray(audio), int(sample_rate or 32000))
-                        take_cer = READBACK_JUDGE.cer(take_wav, rendered or line)
-                    finally:
-                        take_wav.unlink(missing_ok=True)
-                acceptable = (not short_take) and (
-                    take_cer is None or take_cer <= _TAKE_SELECTION_CER_THRESHOLD
-                )
-                candidates.append(
-                    {
-                        "index": take_index,
-                        "audio": audio,
-                        "sample_rate": sample_rate,
-                        "cer": take_cer,
-                        "short": short_take,
-                        "acceptable": acceptable,
-                    }
-                )
-                if acceptable:
-                    break
-
-            acceptable_takes = [item for item in candidates if item["acceptable"]]
-            if acceptable_takes:
-                chosen = acceptable_takes[0]
-            else:
-                # Nothing passed: keep the least-bad take — shortest disaster first,
-                # then the best readback, then the earliest take.
-                chosen = min(
-                    candidates,
-                    key=lambda item: (
-                        item["short"],
-                        item["cer"] if item["cer"] is not None else 2.0,
-                        item["index"],
-                    ),
-                )
-            audio = chosen["audio"]
-            sample_rate = chosen["sample_rate"]
-            selected_take = chosen["index"]
-            take_cers = [item["cer"] for item in candidates]
-            total_acoustic_inference_calls += line_acoustic_inference_calls
-            path = save_audio(audio, sample_rate, destination, base)
-            # A take this far short of what the text needs was not really synthesised.
-            # The engine still "succeeds": measured on this model, untagged Korean
-            # produced 0.08 s of near-silence while the same sentence with an explicit
-            # ``<ko>`` tag produced 2.50 s. Without this flag the WebUI reported success
-            # and offered a 4 KB file for download.
-            produced_seconds = len(np.asarray(audio)) / float(sample_rate or 1)
-            expected_seconds = expected_segment_duration(rendered or line, "zh", float(cfg.get("speed", 1)))
-            suspiciously_short = bool(
-                produced_seconds < _short_output_floor(expected_seconds, rendered or line)
-            )
-            outputs.append({
-                "text": line,
-                "rendered_text": rendered,
-                "accent_level": configured_accent_level(cfg),
-                "pronunciation": line_plan.to_dict(),
-                "file": str(path),
-                "download_id": register_download(path),
-                "error": "",
-                "output_index": index - 1,
-                "semantic_token_count": semantic_token_count,
-                "semantic_frame_rate": semantic_frame_rate,
-                "synthesis_mode": line_synthesis_mode,
-                "segment_count": line_segment_count,
-                "acoustic_inference_calls": line_acoustic_inference_calls,
-                "duration": round(produced_seconds, 3),
-                "expected_duration": round(expected_seconds, 3),
-                "suspiciously_short": suspiciously_short,
-                "takes": len(candidates),
-                "selected_take": selected_take,
-                "take_cers": take_cers,
-                "provenance": _write_output_provenance_quietly(path, cfg, rendered or line),
-                "warning": (
-                    f"生成音频只有 {produced_seconds:.2f}s，远短于这段文本应有的 "
-                    f"{expected_seconds:.2f}s，很可能没有真正合成出来。"
-                    "常见原因：非中文台词没有加语言标签（未标记文本按页面默认语言合成），"
-                    "或该语言的训练数据不足。请在文本里用 <zh>/<yue>/<en>/<ja>/<ko> 明确标注语种。"
-                    if suspiciously_short
-                    else ""
-                ),
-            })
-            _emit_event(
-                event_cb,
-                "output_completed",
-                output_index=index - 1,
-                semantic_token_count=semantic_token_count,
-                semantic_frame_rate=semantic_frame_rate,
-                synthesis_mode=line_synthesis_mode,
-                segment_count=line_segment_count,
-                acoustic_inference_calls=line_acoustic_inference_calls,
-            )
-        except Exception as exc:
-            # Add the failed attempt's calls instead of overwriting: with take
-            # selection earlier takes may already have spent inference calls.
-            line_acoustic_inference_calls += max(
-                1 if line_is_explicit_mixed else 0,
-                int(getattr(SYNTHESIS_BACKEND._inference_calls, "count", 0)),
-            )
-            total_acoustic_inference_calls += line_acoustic_inference_calls
-            error = f"{type(exc).__name__}: {exc}"
-            outputs.append({
-                "text": line,
-                "rendered_text": rendered,
-                "accent_level": configured_accent_level(cfg),
-                "pronunciation": line_plan.to_dict(),
-                "file": "",
-                "download_id": "",
-                "error": error,
-                "output_index": index - 1,
-                "semantic_token_count": semantic_token_count,
-                "semantic_frame_rate": semantic_frame_rate,
-                "synthesis_mode": line_synthesis_mode,
-                "segment_count": line_segment_count,
-                "acoustic_inference_calls": line_acoustic_inference_calls,
-            })
-            _emit_event(event_cb, "output_failed", output_index=index - 1, error=error)
-        _emit_progress(progress_cb, {
-            "status": "running",
-            "phase": "writing",
-            "current": index,
-            "total": len(lines),
-            "completed": len([item for item in outputs if item["file"]]),
-            "current_text": line,
-            "rendered_text": rendered,
-            "output_dir": str(destination),
-            "outputs": list(outputs),
-            "error": outputs[-1]["error"] if outputs else "",
-            "synthesis_mode": line_synthesis_mode,
-            "segment_count": line_segment_count,
-            "acoustic_inference_calls": line_acoustic_inference_calls,
-        })
-
-    completed = [item for item in outputs if item["file"]]
-    pronunciation_manifest = ""
-    pronunciation_manifest_error = ""
-    try:
-        manifest = build_pronunciation_manifest(cfg, line_plans, outputs)
-        pronunciation_manifest = str(write_pronunciation_manifest(destination, manifest))
-    except Exception as exc:  # a manifest failure must not discard finished audio
-        pronunciation_manifest_error = f"{type(exc).__name__}: {exc}"
-    append_history([
-        {"time": datetime.now().strftime("%m-%d %H:%M"), "text": item["text"], "params": f"t{cfg['temperature']}/s{cfg['sample_steps']}/text={cfg.get('text_lang', 'zh')}/prompt={cfg.get('prompt_lang', 'zh')}", "name": Path(item["file"]).name, "file": item["file"], "download_id": item["download_id"]}
-        for item in completed
-    ])
-    result = {
-        "output_dir": str(destination),
-        "total": len(lines),
-        "completed": len(completed),
-        "outputs": outputs,
-        "synthesis_mode": "single_pass_explicit" if used_explicit_mixed else "legacy_single",
-        "segment_count": total_segment_count,
-        "acoustic_inference_calls": total_acoustic_inference_calls,
-        "pronunciation_manifest": pronunciation_manifest,
-        "pronunciation_manifest_error": pronunciation_manifest_error,
-    }
-    _emit_progress(progress_cb, {
-        "status": "done",
-        "phase": "done",
-        "progress": 1.0,
-        "current": len(lines),
-        "total": len(lines),
-        "completed": len(completed),
-        "current_text": "",
-        "rendered_text": "",
-        "output_dir": str(destination),
-        "outputs": list(outputs),
-        "error": "",
-        "synthesis_mode": result["synthesis_mode"],
-        "segment_count": result["segment_count"],
-        "acoustic_inference_calls": result["acoustic_inference_calls"],
-        "pronunciation_manifest": pronunciation_manifest,
-        "pronunciation_manifest_error": pronunciation_manifest_error,
-    })
-    return result
+    return _pipeline.run_locked(
+        cfg,
+        lines,
+        output_dir,
+        progress_cb,
+        event_cb,
+        should_stop,
+        hooks=_synthesis_hooks(),
+    )

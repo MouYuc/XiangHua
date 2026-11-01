@@ -31,12 +31,17 @@ import json
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+from backend.infra.ids import new_job_id
+from backend.infra.logging import get_logger
 from backend.services import core
 from backend.services.gpu_arbiter import GPU_ARBITER
+
+logger = get_logger("xianghua.timbre")
 
 REPO_ROOT = core.REPO_ROOT
 TIMBRE_DIR = core.CONFIG_DIR / "timbre"
@@ -74,7 +79,7 @@ def _load_runtime():
     scripts = str(_scripts_dir())
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
-    import knnvc_runtime  # noqa: WPS433 (deliberate lazy import)
+    import knnvc_runtime
 
     return knnvc_runtime
 
@@ -122,11 +127,27 @@ def corpus_digest(paths: list[Path]) -> str:
     return hasher.hexdigest()[:16]
 
 
+class TimbreCancelled(RuntimeError):
+    """The user cancelled a conversion; partial work is discarded, not failed."""
+
+
+_CANCELLED_PAYLOAD: dict[str, Any] = {
+    "status": "cancelled",
+    "phase": "cancelled",
+    "message": "任务已取消。",
+    "error": "",
+}
+
+
 @dataclass
 class _Job:
     job_id: str
     snapshot: dict[str, Any]
     lock: threading.RLock = field(default_factory=threading.RLock)
+    # Set by ``cancel()``. Timbre work is one long model call, so the event is
+    # honoured at the two safe boundaries: before waiting for the card, and again
+    # right after the lease is granted (the common case is "cancel while queued").
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 class TimbreBackend:
@@ -238,6 +259,7 @@ class TimbreBackend:
         config: dict[str, Any],
         progress: Callable[[str], None] | None = None,
         device: str | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Encode a profile's reference corpus into a cached matching pool."""
         paths = reference_files(profile_id, config)
@@ -250,9 +272,12 @@ class TimbreBackend:
         cache = self.profile_cache_path(profile_id, paths)
         if progress:
             progress(f"正在编码 {len(paths)} 个参考文件…")
-        features = runtime.build_matching_set(
-            model, paths, cache=cache, progress=False
-        )
+        try:
+            features = runtime.build_matching_set(
+                model, paths, cache=cache, progress=False, should_stop=should_stop
+            )
+        except runtime.Cancelled as exc:
+            raise TimbreCancelled(str(exc)) from exc
         self._last_used = time.time()
         seconds = features.shape[0] / 50.0
         if seconds > MAX_REFERENCE_SECONDS:
@@ -278,6 +303,7 @@ class TimbreBackend:
         config: dict[str, Any],
         progress: Callable[[str], None] | None = None,
         device: str | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ):
         """Return the cached matching pool, building it when absent or stale."""
         paths = reference_files(profile_id, config)
@@ -289,10 +315,16 @@ class TimbreBackend:
         cache = self.profile_cache_path(profile_id, paths)
         if cache.is_file():
             model = self.model(device)
-            return runtime.build_matching_set(model, paths, cache=cache, progress=False)
-        self.build_profile(profile_id, config, progress=progress, device=device)
+            return runtime.build_matching_set(
+                model, paths, cache=cache, progress=False, should_stop=should_stop
+            )
+        self.build_profile(
+            profile_id, config, progress=progress, device=device, should_stop=should_stop
+        )
         model = self.model(device)
-        return runtime.build_matching_set(model, paths, cache=cache, progress=False)
+        return runtime.build_matching_set(
+            model, paths, cache=cache, progress=False, should_stop=should_stop
+        )
 
     # ------------------------------------------------------------ conversion ---
 
@@ -304,6 +336,7 @@ class TimbreBackend:
         topk: int = 4,
         device: str | None = None,
         progress: Callable[[str], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Convert one source recording into the profile's timbre."""
         if not source.is_file():
@@ -312,7 +345,9 @@ class TimbreBackend:
             raise ValueError("topk 必须 >= 1。")
 
         runtime = _load_runtime()
-        matching_set = self.ensure_profile(profile_id, config, progress=progress, device=device)
+        matching_set = self.ensure_profile(
+            profile_id, config, progress=progress, device=device, should_stop=should_stop
+        )
         if topk > matching_set.shape[0]:
             raise ValueError(
                 f"topk={topk} 超过匹配池帧数 {matching_set.shape[0]}，请提供更多参考音。"
@@ -322,7 +357,12 @@ class TimbreBackend:
         if progress:
             progress(f"正在转换 topk={topk}…")
         started = time.time()
-        converted = runtime.convert(model, source, matching_set, topk=topk)
+        try:
+            converted = runtime.convert(
+                model, source, matching_set, topk=topk, should_stop=should_stop
+            )
+        except runtime.Cancelled as exc:
+            raise TimbreCancelled(str(exc)) from exc
 
         stamp = time.strftime("%Y%m%d_%H%M%S")
         out_dir = OUTPUT_ROOT / stamp
@@ -352,7 +392,7 @@ class TimbreBackend:
         device: str | None = None,
     ) -> dict[str, Any]:
         """Run a conversion on a worker thread and return its first snapshot."""
-        job_id = f"timbre_{int(time.time() * 1000)}"
+        job_id = new_job_id("timbre")
         job = _Job(
             job_id=job_id,
             snapshot={
@@ -377,8 +417,11 @@ class TimbreBackend:
         def _progress(message: str) -> None:
             self._update(job_id, {"message": message})
 
-        def _run() -> None:
+        def _work() -> None:
             try:
+                if job.cancel_event.is_set():
+                    self._update(job_id, _CANCELLED_PAYLOAD)
+                    return
                 # A conversion can take minutes, so it waits for the card instead
                 # of failing after the 60 s interactive timeout. The lease is
                 # released as soon as the block exits, including on error.
@@ -388,9 +431,23 @@ class TimbreBackend:
                     label=f"音色转换 {source.name}",
                     timeout=None,
                 ):
+                    if job.cancel_event.is_set():
+                        self._update(job_id, _CANCELLED_PAYLOAD)
+                        return
                     result = self.convert(
-                        source, profile_id, config, topk=topk, device=device, progress=_progress
+                        source,
+                        profile_id,
+                        config,
+                        topk=topk,
+                        device=device,
+                        progress=_progress,
+                        should_stop=job.cancel_event.is_set,
                     )
+            except TimbreCancelled:
+                # Cancelled mid-inference: nothing partial is kept, and this is
+                # not an error the user needs to see.
+                self._update(job_id, _CANCELLED_PAYLOAD)
+                return
             except Exception as exc:
                 self._update(
                     job_id,
@@ -410,11 +467,30 @@ class TimbreBackend:
                     "progress": 1.0,
                     "result": result,
                     "message": (
-                        f"完成：{result['file_name']}（{result['duration']}s，"
-                        f"耗时 {result['seconds_taken']}s）"
+                        f"完成：{result.get('file_name', '输出文件')}"
+                        f"（{result.get('duration', '?')}s，"
+                        f"耗时 {result.get('seconds_taken', '?')}s）"
                     ),
                 },
             )
+
+        def _run() -> None:
+            # Last-resort guard: anything raised while writing the *terminal*
+            # status used to escape the thread and leave the job "running"
+            # forever, so the UI polled a state that could never change.
+            try:
+                _work()
+            except Exception as exc:
+                logger.error("音色转换收尾失败：%s", exc)
+                self._update(
+                    job_id,
+                    {
+                        "status": "failed",
+                        "phase": "failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "message": "任务异常终止，请查看服务日志。",
+                    },
+                )
 
         threading.Thread(target=_run, daemon=True, name=job_id).start()
         return self.snapshot(job_id) or {}
@@ -423,7 +499,7 @@ class TimbreBackend:
         self, profile_id: str, config: dict[str, Any], device: str | None = None
     ) -> dict[str, Any]:
         """Build a profile's matching pool on a worker thread."""
-        job_id = f"timbreprofile_{int(time.time() * 1000)}"
+        job_id = new_job_id("timbreprofile")
         job = _Job(
             job_id=job_id,
             snapshot={
@@ -445,8 +521,11 @@ class TimbreBackend:
         def _progress(message: str) -> None:
             self._update(job_id, {"message": message})
 
-        def _run() -> None:
+        def _work() -> None:
             try:
+                if job.cancel_event.is_set():
+                    self._update(job_id, _CANCELLED_PAYLOAD)
+                    return
                 # Encoding the reference corpus is slow and may run for minutes;
                 # wait for the card rather than failing on the default timeout.
                 with GPU_ARBITER.lease(
@@ -455,7 +534,21 @@ class TimbreBackend:
                     label=f"音色匹配池 {profile_id}",
                     timeout=None,
                 ):
-                    result = self.build_profile(profile_id, config, progress=_progress, device=device)
+                    if job.cancel_event.is_set():
+                        self._update(job_id, _CANCELLED_PAYLOAD)
+                        return
+                    result = self.build_profile(
+                        profile_id,
+                        config,
+                        progress=_progress,
+                        device=device,
+                        should_stop=job.cancel_event.is_set,
+                    )
+            except TimbreCancelled:
+                # Cancelled mid-inference: nothing partial is kept, and this is
+                # not an error the user needs to see.
+                self._update(job_id, _CANCELLED_PAYLOAD)
+                return
             except Exception as exc:
                 self._update(
                     job_id,
@@ -475,11 +568,27 @@ class TimbreBackend:
                     "progress": 1.0,
                     "result": result,
                     "message": (
-                        f"匹配池就绪：{result['frames']} 帧 / {result['seconds']}s，"
-                        f"来自 {result['reference_files']} 个文件。"
+                        f"匹配池就绪：{result.get('frames', '?')} 帧 / "
+                        f"{result.get('seconds', '?')}s，来自 "
+                        f"{result.get('reference_files', '?')} 个文件。"
                     ),
                 },
             )
+
+        def _run() -> None:
+            try:
+                _work()
+            except Exception as exc:
+                logger.error("匹配池构建收尾失败：%s", exc)
+                self._update(
+                    job_id,
+                    {
+                        "status": "failed",
+                        "phase": "failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "message": "任务异常终止，请查看服务日志。",
+                    },
+                )
 
         threading.Thread(target=_run, daemon=True, name=job_id).start()
         return self.snapshot(job_id) or {}
@@ -494,6 +603,19 @@ class TimbreBackend:
             return None
         with job.lock:
             return json.loads(json.dumps(job.snapshot, ensure_ascii=False))
+
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        """Cancel a queued conversion, or signal a running one to stop."""
+        with self._jobs_lock:
+            job = self._jobs.get(job_id)
+        if job is None:
+            return {"cancelled": False, "reason": "任务不存在。"}
+        with job.lock:
+            if job.snapshot.get("status") in {"done", "failed", "cancelled"}:
+                return {"cancelled": False, "reason": "任务已经结束，无法取消。"}
+            job.cancel_event.set()
+        self._update(job_id, {"message": "正在取消…"})
+        return {"cancelled": True, "reason": "已请求取消；若已进入模型推理，会在本次完成后停。"}
 
     def _update(self, job_id: str, payload: dict[str, Any]) -> None:
         with self._jobs_lock:

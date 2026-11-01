@@ -17,8 +17,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import backend.app as app_module  # noqa: E402
-from backend.services import voice_assets  # noqa: E402
+import backend.app as app_module
+from backend.api import deps
+from backend.services import voice_assets
 
 
 def _config(**overrides):
@@ -169,7 +170,7 @@ class VoiceCardRouteTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.store = voice_assets.VoiceCardStore(Path(self._tmp.name))
         self._patchers = [
-            patch.object(app_module, "VOICE_CARDS", self.store),
+            patch.object(deps, "VOICE_CARDS", self.store),
             patch.object(
                 app_module.core,
                 "load_config",

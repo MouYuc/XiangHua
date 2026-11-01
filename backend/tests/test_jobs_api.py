@@ -14,7 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import backend.app as app_module  # noqa: E402
+import backend.app as app_module
+from backend.api import deps
 
 
 class JobRoutesTests(unittest.TestCase):
@@ -39,7 +40,7 @@ class JobRoutesTests(unittest.TestCase):
             get=lambda job_id: {"job_id": job_id, "kind": "synthesis", "cancelable": False},
             cancel=lambda job_id: {"cancelled": False, "reason": "该类任务暂不支持取消。"},
         )
-        with patch.object(app_module, "JOB_REGISTRY", fake):
+        with patch.object(deps, "JOB_REGISTRY", fake):
             response = self.client.post("/api/jobs/synth_1/cancel")
         self.assertEqual(response.status_code, 409)
         self.assertIn("不支持", response.json()["detail"])

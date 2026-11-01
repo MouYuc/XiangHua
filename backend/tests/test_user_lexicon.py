@@ -11,8 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services.pronunciation import build_pronunciation_plan  # noqa: E402
-from backend.services import user_lexicon  # noqa: E402
+from backend.services import user_lexicon
+from backend.services.pronunciation import build_pronunciation_plan
 
 
 class LexiconServiceTests(unittest.TestCase):

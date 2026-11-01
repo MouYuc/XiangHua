@@ -4,7 +4,6 @@ import numpy as np
 
 from tools import mixed_language_baseline_experiment as experiment
 
-
 LANGUAGES = ("zh", "yue", "en", "ja", "ko")
 
 

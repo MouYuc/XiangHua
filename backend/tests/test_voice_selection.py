@@ -8,15 +8,13 @@ from fastapi.testclient import TestClient
 
 from backend.app import SYNTHESIS_JOBS, create_app
 from backend.schemas import ConfigUpdate
-from backend.services import core
-from backend.services import voice_selection
+from backend.services import core, voice_selection
 from backend.services.voice_selection import (
     AccentPack,
     apply_voice_selection,
     load_accent_packs,
     rewrite_text_for_accent,
 )
-
 
 ACCENT_MANIFEST = {
     "version": 1,

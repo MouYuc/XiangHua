@@ -17,8 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import backend.app as app_module  # noqa: E402
-from backend.services import provenance  # noqa: E402
+import backend.app as app_module
+from backend.api import deps
+from backend.services import dialogue as dialogue_service
+from backend.services import provenance
 
 
 def _set_env(**values: str | None):
@@ -134,7 +136,7 @@ class DialogueApiTests(unittest.TestCase):
             "outputs": [],
         }
         with mock.patch.object(
-            app_module.VOICE_CARDS, "list_cards", return_value=[]
+            deps.VOICE_CARDS, "list_cards", return_value=[]
         ):
             response = self.client.post(
                 "/api/dialogue/synthesis",
@@ -143,7 +145,7 @@ class DialogueApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
             self.assertIn("vc_missing", response.json()["detail"])
         with mock.patch.object(
-            app_module.dialogue.DIALOGUE_JOBS, "start", return_value=fake_snapshot
+            dialogue_service.DIALOGUE_JOBS, "start", return_value=fake_snapshot
         ) as fake_start:
             response = self.client.post(
                 "/api/dialogue/synthesis", json={"script": "旁白句", "roles": {}}
@@ -156,7 +158,7 @@ class DialogueApiTests(unittest.TestCase):
 
     def test_status_unknown_404(self) -> None:
         with mock.patch.object(
-            app_module.dialogue.DIALOGUE_JOBS, "snapshot", return_value=None
+            dialogue_service.DIALOGUE_JOBS, "snapshot", return_value=None
         ):
             self.assertEqual(
                 self.client.get("/api/dialogue/status/dlg_x").status_code, 404
@@ -172,7 +174,7 @@ class DialogueApiTests(unittest.TestCase):
                 "outputs": [{"speaker": "小明", "line": "你好", "file": str(audio)}],
             }
             with mock.patch.object(
-                app_module.dialogue.DIALOGUE_JOBS, "snapshot", return_value=snapshot
+                dialogue_service.DIALOGUE_JOBS, "snapshot", return_value=snapshot
             ), mock.patch.object(app_module.core, "register_download", lambda p: "e" * 32):
                 data = self.client.get("/api/dialogue/status/dlg_2").json()
             self.assertNotIn("file", data["outputs"][0])

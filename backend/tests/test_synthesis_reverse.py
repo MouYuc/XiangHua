@@ -5,7 +5,6 @@ import pytest
 
 from backend.services import core
 
-
 SUPPORTED_LANGUAGES = ("zh", "yue", "en", "ja", "ko")
 SAMPLE_TEXT = {
     "zh": "你好",

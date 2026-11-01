@@ -27,14 +27,17 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO
 
 import numpy as np
 import soundfile as sf
 
+from backend.infra.atomic import atomic_write_text
+from backend.infra.logging import get_logger
 from backend.services import media_diarization, reference_audio, whisper_cache
 from backend.services.gpu_arbiter import GPU_ARBITER
 
@@ -55,6 +58,8 @@ SUPPORTED_MEDIA_SUFFIXES = {
 }
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+logger = get_logger("xianghua.media")
 _PROGRESS = Callable[[float, str], None]
 
 DEFAULT_MAX_MEDIA_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB：够长视频，又不至于灌满磁盘
@@ -77,6 +82,23 @@ def max_media_bytes() -> int:
 # happen under one lock, and the entry must be removed when the worker ends.
 _ACTIVE_ANALYSES: dict[str, str] = {}
 _ANALYSIS_LOCK = threading.Lock()
+
+# One lock per ``session.json``, process-wide. A fresh MediaIngestService is
+# built per request (see ``_media_service`` in app.py), so an instance-level lock
+# would serialise nothing: two requests would each hold their own.
+_SESSION_LOCKS: dict[str, threading.RLock] = {}
+_SESSION_LOCKS_GUARD = threading.Lock()
+
+
+def session_lock(path: Path) -> threading.RLock:
+    """The process-wide lock guarding one session file."""
+    key = str(path.resolve())
+    with _SESSION_LOCKS_GUARD:
+        existing = _SESSION_LOCKS.get(key)
+        if existing is None:
+            existing = threading.RLock()
+            _SESSION_LOCKS[key] = existing
+        return existing
 
 
 class MediaIngestError(RuntimeError):
@@ -139,7 +161,13 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+#: Ceiling for one ffprobe/ffmpeg invocation. A 2 GiB upload decodes in well
+#: under this; the timeout exists so a wedged child cannot pin a request thread
+#: (uploads run in the threadpool) or the analysis worker forever.
+MEDIA_COMMAND_TIMEOUT_SECONDS = 1800
+
+
+def _run_command(command: list[str], *, timeout: float = MEDIA_COMMAND_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = subprocess.run(
@@ -150,10 +178,15 @@ def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
             errors="replace",
             creationflags=creationflags,
             check=False,
+            timeout=timeout,
         )
     except FileNotFoundError as exc:
         raise MediaIngestError(
             "找不到 ffmpeg/ffprobe。请先安装 FFmpeg，并确认它在 PATH 中。"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise MediaIngestError(
+            f"媒体处理超时（{int(timeout)} 秒）：{Path(command[-1]).name}"
         ) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
@@ -298,7 +331,32 @@ class MediaIngestService:
 
     def save(self, session: dict[str, Any]) -> None:
         session["updated_at"] = _now()
-        _atomic_json(self.session_dir(session["session_id"]) / "session.json", session)
+        path = self.session_dir(session["session_id"]) / "session.json"
+        with session_lock(path):
+            _atomic_json(path, session)
+
+    def patch(
+        self,
+        session_id: str,
+        mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ) -> dict[str, Any]:
+        """Locked read-modify-write against the *current* session on disk.
+
+        A long analysis used to ``load()`` once at the start and ``save()`` the
+        whole dict minutes later, silently reverting anything the user changed in
+        the meantime (a chosen speaker, an exported dataset, a corrected
+        transcript). Callers now hand over only the fields they own; this method
+        re-reads under the session lock so unrelated fields always survive.
+        """
+        path = self.session_dir(session_id) / "session.json"
+        with session_lock(path):
+            session = self.load(session_id)
+            updated = mutator(session)
+            if updated is None:
+                return session
+            updated["updated_at"] = _now()
+            _atomic_json(path, updated)
+            return updated
 
     def load(self, session_id: str) -> dict[str, Any]:
         path = self.session_dir(session_id) / "session.json"
@@ -477,9 +535,35 @@ class MediaIngestService:
 
     # ----------------------------------------------------------------- upload ---
 
-    def ingest_file(self, session_id: str, filename: str, stream: BinaryIO) -> dict[str, Any]:
+    def ingest_file(
+        self,
+        session_id: str,
+        filename: str,
+        stream: BinaryIO,
+        *,
+        background: bool = False,
+        autostart_analysis: bool = False,
+        speaker_count: int | None = None,
+        transcribe: bool = False,
+    ) -> dict[str, Any]:
+        """Store one uploaded recording.
+
+        ``background=False`` (default) waits for probe + transcode and returns the
+        ready session — the behaviour CLI callers and tests rely on.
+        ``background=True`` returns as soon as the bytes are on disk, with
+        ``job.status == "uploading"``; the HTTP route uses this so a slow decode
+        cannot pin a request-thread worker.
+        """
         try:
-            return self._ingest_file(session_id, filename, stream)
+            return self._ingest_file(
+                session_id,
+                filename,
+                stream,
+                background=background,
+                autostart_analysis=autostart_analysis,
+                speaker_count=speaker_count,
+                transcribe=transcribe,
+            )
         except BaseException:
             self._discard_session_without_source(session_id)
             raise
@@ -503,7 +587,17 @@ class MediaIngestService:
         except MediaIngestError:
             return
 
-    def _ingest_file(self, session_id: str, filename: str, stream: BinaryIO) -> dict[str, Any]:
+    def _ingest_file(
+        self,
+        session_id: str,
+        filename: str,
+        stream: BinaryIO,
+        *,
+        background: bool = False,
+        autostart_analysis: bool = False,
+        speaker_count: int | None = None,
+        transcribe: bool = False,
+    ) -> dict[str, Any]:
         session = self.load(session_id)
         if not session.get("rights", {}).get("declared"):
             raise MediaIngestError("该会话没有权利声明，不能上传媒体。")
@@ -536,13 +630,101 @@ class MediaIngestService:
             source_path.unlink(missing_ok=True)
             raise MediaIngestError("上传的文件为空。")
 
+        if not background:
+            # Synchronous path: callers that need the finished session in hand
+            # (CLI, tests, scripts) keep the old behaviour, including letting an
+            # I/O failure propagate so the half-built session is discarded.
+            self._prepare_media_sync(session_id, source_path, safe_name)
+            return self.load(session_id)
+
+        # Probing and decoding a two-hour recording takes minutes. Doing it in
+        # the request thread occupied a pool worker for the whole upload, so a
+        # few slow files could exhaust the pool and freeze every other endpoint.
+        # The bytes are already on disk, so hand the CPU work to a worker and let
+        # the UI poll `job.status == "uploading"`.
+        session["job"] = {
+            "status": "uploading",
+            "stage": "转码中",
+            "progress": 0.0,
+            "message": "正在读取媒体信息并转码。",
+            "error": "",
+        }
+        self.save(session)
+        threading.Thread(
+            target=self._prepare_uploaded_media,
+            args=(session_id, source_path, safe_name),
+            kwargs={
+                "autostart_analysis": autostart_analysis,
+                "speaker_count": speaker_count,
+                "transcribe": transcribe,
+            },
+            daemon=True,
+            name=f"media-prepare-{session_id}",
+        ).start()
+        return session
+
+    def _prepare_uploaded_media(
+        self,
+        session_id: str,
+        source_path: Path,
+        safe_name: str,
+        *,
+        autostart_analysis: bool = False,
+        speaker_count: int | None = None,
+        transcribe: bool = False,
+    ) -> None:
+        """Worker-thread wrapper: prepare, and record any failure on the session.
+
+        The synchronous path calls :meth:`_prepare_media_sync` directly so an
+        I/O failure still propagates and the half-built session is discarded.
+        """
+        try:
+            self._prepare_media_sync(session_id, source_path, safe_name)
+        except Exception as exc:
+            logger.error("媒体转码失败：%s", exc)
+            error_text = str(exc)
+            self.patch(
+                session_id,
+                lambda fresh: {
+                    **fresh,
+                    "job": {
+                        "status": "fail",
+                        "stage": "转码失败",
+                        "progress": 0.0,
+                        "message": "媒体转码失败。",
+                        "error": error_text,
+                    },
+                },
+            )
+            return
+        if autostart_analysis:
+            try:
+                self.start_analysis(session_id, speaker_count=speaker_count, transcribe=transcribe)
+            except MediaIngestError as exc:
+                message = str(exc)
+                self.patch(
+                    session_id,
+                    lambda fresh, message=message: {
+                        **fresh,
+                        "job": {
+                            "status": "fail",
+                            "stage": "无法开始分析",
+                            "progress": 0.0,
+                            "message": message,
+                            "error": message,
+                        },
+                    },
+                )
+
+    def _prepare_media_sync(self, session_id: str, source_path: Path, safe_name: str) -> None:
+        """Probe + transcode one uploaded file and mark the session ready. Raises on failure."""
+        directory = self.session_dir(session_id)
         probe = probe_media(source_path)
         analysis_path = directory / "analysis" / "source_16k.wav"
         export_path = directory / "analysis" / "source_32k.wav"
         extract_audio(source_path, analysis_path, ANALYSIS_SAMPLE_RATE)
         extract_audio(source_path, export_path, EXPORT_SAMPLE_RATE)
-
-        session["source"] = {
+        source = {
             "filename": safe_name,
             "path": self._relative(session_id, source_path),
             "analysis_audio": self._relative(session_id, analysis_path),
@@ -554,21 +736,27 @@ class MediaIngestService:
             "size_bytes": probe["size_bytes"],
             "sha256": _sha256_file(source_path),
         }
-        session["job"] = {
-            "status": "idle",
-            "stage": "等待分析",
-            "progress": 0.0,
-            "message": "媒体已入库，可以开始说话人分离。",
-            "error": "",
-        }
-        session["speakers"] = []
-        session["segments"] = []
-        session["runs"] = []
-        session["active_run"] = ""
-        session["selected_speaker"] = ""
-        session["dataset"] = None
-        self.save(session)
-        return session
+
+        def apply_ready(fresh: dict[str, Any]) -> dict[str, Any]:
+            return {
+                **fresh,
+                "source": source,
+                "job": {
+                    "status": "idle",
+                    "stage": "等待分析",
+                    "progress": 0.0,
+                    "message": "媒体已入库，可以开始说话人分离。",
+                    "error": "",
+                },
+                "speakers": [],
+                "segments": [],
+                "runs": [],
+                "active_run": "",
+                "selected_speaker": "",
+                "dataset": None,
+            }
+
+        self.patch(session_id, apply_ready)
 
     # -------------------------------------------------------------- diarize ---
 
@@ -593,6 +781,10 @@ class MediaIngestService:
         session = self.load(session_id)
         source = session.get("source") or {}
         if not source.get("analysis_audio"):
+            # Distinguish "still transcoding" from "nothing uploaded": the upload
+            # endpoint now returns before the decode finishes.
+            if (session.get("job") or {}).get("status") == "uploading":
+                raise MediaIngestError("媒体仍在转码中，请等待转码完成后再开始分析。")
             raise MediaIngestError("还没有上传媒体。")
 
         def notify(fraction: float, stage: str) -> None:
@@ -715,7 +907,6 @@ class MediaIngestService:
             session["segments"] = segments
             session["speakers"] = speaker_rows
             session["selected_speaker"] = result.speakers[0].speaker_id if result.speakers else ""
-            session["dataset"] = None
             session["job"] = {
                 "status": "done",
                 "stage": "完成",
@@ -723,7 +914,27 @@ class MediaIngestService:
                 "message": f"识别到 {len(result.speakers)} 个说话人，生成 {len(segments)} 个切片。",
                 "error": "",
             }
-            self.save(session)
+            # Patch only the fields this analysis owns. The old code saved the
+            # whole dict loaded minutes earlier, which reverted a speaker choice
+            # or mid-run export the user made while it was running.
+            #
+            # ``dataset`` is deliberately cleared: it points at slices from the
+            # *previous* run, so keeping it after a re-analysis would hand the
+            # next export a stale manifest (documented contract, pinned by
+            # test_activate_dataset_by_id_after_reanalysis_replays_the_old_manifest).
+            session = self.patch(
+                session_id,
+                lambda fresh: {
+                    **fresh,
+                    "runs": runs,
+                    "active_run": run_id,
+                    "segments": segments,
+                    "speakers": speaker_rows,
+                    "selected_speaker": session["selected_speaker"],
+                    "dataset": None,
+                    "job": session["job"],
+                },
+            )
             notify(1.0, "完成")
         return session
 
@@ -805,7 +1016,10 @@ class MediaIngestService:
                     "error": "",
                 }
                 try:
-                    self.save(session)
+                    session = self.patch(
+                        session_id,
+                        lambda fresh: {**fresh, "job": session["job"]},
+                    )
                 except BaseException:
                     _ACTIVE_ANALYSES.pop(session_id, None)
                     raise
@@ -857,16 +1071,20 @@ class MediaIngestService:
                 return
             last["progress"] = float(fraction)
             last["stage"] = stage
-            with self._lock:
-                session = self.load(session_id)
-                if (session.get("job") or {}).get("status") != "running":
-                    return
-                session["job"].update(
-                    progress=round(float(fraction), 4),
-                    stage=stage,
-                    message=f"{stage} {int(round(fraction * 100))}%",
-                )
-                self.save(session)
+
+            def patch_job(fresh: dict[str, Any]) -> dict[str, Any] | None:
+                job = fresh.get("job") or {}
+                if job.get("status") != "running":
+                    return None
+                fresh["job"] = {
+                    **job,
+                    "progress": round(float(fraction), 4),
+                    "stage": stage,
+                    "message": f"{stage} {int(round(fraction * 100))}%",
+                }
+                return fresh
+
+            self.patch(session_id, patch_job)
 
         try:
             self.analyze(
@@ -877,16 +1095,22 @@ class MediaIngestService:
                 progress=progress,
             )
         except Exception as exc:
-            with self._lock:
-                session = self.load(session_id)
-                session["job"] = {
-                    "status": "fail",
-                    "stage": "失败",
-                    "progress": 0.0,
-                    "message": "分析失败。",
-                    "error": str(exc),
-                }
-                self.save(session)
+            # Bind the message before the closure: Python unbinds ``exc`` when the
+            # handler exits, and a lambda that reads it later would raise.
+            error_text = str(exc)
+            self.patch(
+                session_id,
+                lambda fresh: {
+                    **fresh,
+                    "job": {
+                        "status": "fail",
+                        "stage": "失败",
+                        "progress": 0.0,
+                        "message": "分析失败。",
+                        "error": error_text,
+                    },
+                },
+            )
 
     # --------------------------------------------------------------- select ---
 
@@ -895,10 +1119,10 @@ class MediaIngestService:
         available = {row.get("speaker_id") for row in session.get("speakers") or []}
         if speaker_id not in available:
             raise MediaIngestError("指定的说话人不存在。")
-        session["selected_speaker"] = speaker_id
-        session["dataset"] = None
-        self.save(session)
-        return session
+        return self.patch(
+            session_id,
+            lambda fresh: {**fresh, "selected_speaker": speaker_id, "dataset": None},
+        )
 
     # --------------------------------------------------------------- export ---
 
@@ -1023,7 +1247,7 @@ class MediaIngestService:
             "train_ready": manifest["train_ready"],
         }
         session["dataset"] = dataset
-        self.save(session)
+        self.patch(session_id, lambda fresh: {**fresh, "dataset": dataset})
         return dataset
 
     def _select_export_segments(
@@ -1198,7 +1422,7 @@ class MediaIngestService:
             "stats": manifest.get("stats") or {},
             "train_ready": bool(manifest.get("train_ready")),
         }
-        self.save(session)
+        self.patch(session_id, lambda fresh: {**fresh, "dataset": session["dataset"]})
         return result
 
     def _write_training_workspace(
@@ -1248,10 +1472,13 @@ class MediaIngestService:
             text = str(row.get("text") or "").replace("|", "｜")
             lines.append(f"{destination}|sliced|{list_language}|{text}")
         payload = "\n".join(lines) + "\n"
-        list_path.write_text(payload, encoding="utf-8")
+        # Both lists are read by a running feature-extraction/training subprocess,
+        # so they are replaced atomically: a crash mid-write must never leave a
+        # truncated list that the trainer would silently train on.
+        atomic_write_text(list_path, payload)
         text_ready = all(str(row.get("text") or "").strip() for row in rows)
         if text_ready:
-            whisper_path.write_text(payload, encoding="utf-8")
+            atomic_write_text(whisper_path, payload)
         return {
             "copied": len(rows),
             "rejected": int(rejected),

@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services import provenance, voice_assets  # noqa: E402
+from backend.services import provenance, voice_assets
 
 
 def _write_sine(path: Path, seconds: float = 0.2, sample_rate: int = 32000) -> None:

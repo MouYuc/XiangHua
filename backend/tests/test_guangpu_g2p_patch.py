@@ -21,7 +21,6 @@ Run from the repository root:
 from __future__ import annotations
 
 import re
-import sys
 import unittest
 from pathlib import Path
 
@@ -112,7 +111,6 @@ class GuangpuG2pPatchTests(unittest.TestCase):
     def test_every_existing_patch_reading_has_symbols(self) -> None:
         """Each patched reading must map to real phonemes, both in opencpop and in
         the v2 symbol table; otherwise the frontend would assert or emit UNK."""
-        import os
         import sys as _sys
 
         symbols = None

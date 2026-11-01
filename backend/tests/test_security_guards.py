@@ -22,8 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import backend.app as app_module  # noqa: E402
-from backend.services import core, media_ingest  # noqa: E402
+import backend.app as app_module
+from backend.services import core, media_ingest
 
 
 def _set_env(**values: str | None):

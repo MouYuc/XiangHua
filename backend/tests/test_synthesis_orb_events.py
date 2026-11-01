@@ -9,8 +9,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from backend.schemas import ConfigUpdate
-from backend.services import core
-from backend.services import synthesis_jobs
+from backend.services import core, synthesis_jobs
 
 
 def valid_config(root: Path) -> dict[str, object]:

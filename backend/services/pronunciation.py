@@ -55,18 +55,18 @@ LIGHT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
 )
 
 # Medium: more colloquial word choices, but still no global 的/是 rewrite.
-MEDIUM_REPLACEMENTS: tuple[tuple[str, str], ...] = LIGHT_REPLACEMENTS + (
+MEDIUM_REPLACEMENTS: tuple[tuple[str, str], ...] = (*LIGHT_REPLACEMENTS, *(
     ("什么", "乜嘢"),
     ("没", "冇"),
     ("你说", "你话"),
     ("我说", "我话"),
-)
+))
 
 # Heavy: the old to_lightmid semantics, now guarded by protected compounds.
-HEAVY_REPLACEMENTS: tuple[tuple[str, str], ...] = MEDIUM_REPLACEMENTS + (
+HEAVY_REPLACEMENTS: tuple[tuple[str, str], ...] = (*MEDIUM_REPLACEMENTS, *(
     ("的", "嘅"),
     ("是", "系"),
-)
+))
 
 _ACCENT_INTENSITIES: dict[AccentLevel, float] = {
     AccentLevel.OFF: 0.0,
@@ -143,7 +143,6 @@ def _render(
     ``user_rules``（用户发音词典）优先于口音规则与固定搭配保护：词典是用户的
     显式意图，例如为多音字或游戏专名指定 homophone 读法，必须原样生效。
     """
-    protected = set(PROTECTED_TERMS)
     targets: dict[str, str | None] = {}
     for src, dst in user_rules:
         targets[src] = dst
