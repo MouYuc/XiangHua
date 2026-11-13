@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from backend.services.core import CONFIG_DIR
+from backend.infra.paths import CONFIG_DIR
 
 PROVENANCE_SCHEMA_VERSION = 1
 PROVENANCE_KEY_FILE = CONFIG_DIR / "provenance.key"

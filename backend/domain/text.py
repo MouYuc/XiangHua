@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from backend.services.pronunciation import (
+from backend.domain.pronunciation import (
     AccentLevel,
     PronunciationPlan,
     build_pronunciation_plan,
@@ -86,7 +86,7 @@ def render_with_plan(text: str, cfg: dict[str, Any]) -> PronunciationPlan:
     lookup failure must never break synthesis, so it degrades to no overrides.
     """
     try:
-        from backend.services import user_lexicon
+        from backend.domain import user_lexicon
 
         overrides = user_lexicon.active_overrides()
     except Exception:

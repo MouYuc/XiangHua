@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
+from backend.domain.pronunciation import PronunciationPlan
 from backend.domain.text import (
     configured_accent_level,
     deterministic_language_seed,
@@ -34,9 +35,8 @@ from backend.domain.text import (
     render_line_with_plan,
     validate_synthesis_language_text,
 )
+from backend.infra.gpu import GPU_ARBITER
 from backend.infra.logging import get_logger
-from backend.services.gpu_arbiter import GPU_ARBITER
-from backend.services.pronunciation import PronunciationPlan
 from tools.rules import safe_name
 
 logger = get_logger("xianghua.pipeline")
@@ -137,7 +137,7 @@ class _ReadbackJudge:
         self._attempted = True
         self._last_attempt_at = now
         try:
-            scripts = REPO_ROOT / "scripts"
+            scripts = REPO_ROOT / "scripts" / "experiments"
             if str(scripts) not in sys.path:
                 sys.path.insert(0, str(scripts))
             from asr_readback import cer as cer_function

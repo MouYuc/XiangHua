@@ -20,7 +20,7 @@ from backend.schemas import (
 from backend.services import (
     core,
 )
-from tools.train import (
+from backend.services.training import (
     ST_DONE,
     apply_patch,
     cmd_asr,
@@ -45,10 +45,10 @@ from tools.train import (
     train_env_rows,
     write_corrected,
 )
-from tools.train import (
+from backend.services.training import (
     load_state as load_train_state,
 )
-from tools.train import (
+from backend.services.training import (
     save_state as save_train_state,
 )
 

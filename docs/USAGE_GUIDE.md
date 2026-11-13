@@ -2,7 +2,7 @@
 
 README 的扩展版：一键安装、命令行批量合成与 FAQ。
 
-> **2026-10-17 状态**：当前默认是“清晰优先”（底模 v2Pro + 清晰参考音），默认 `accent_level=off`。音色入口已改为**一段自然说话音频**：系统自动切片、识别、选参考片段，不需要照读台词本或补录口音。口音为 `off / light / medium / heavy` 四档，固定搭配受保护。首轮验证见 [MVP_VALIDATION.md](MVP_VALIDATION.md)，新架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+> **2026-10-17 状态**：当前默认是“清晰优先”（底模 v2Pro + 清晰参考音），默认 `accent_level=off`。音色入口已改为**一段自然说话音频**：系统自动切片、识别、选参考片段，不需要照读台词本或补录口音。口音为 `off / light / medium / heavy` 四档，固定搭配受保护。新架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 本仓库**不携带 GPT-SoVITS 环境**（它是独立的 MIT 项目，本体 + 模型约 15GB）。
 `setup.ps1` / `setup.sh` 会自动完成 6 步：
@@ -36,9 +36,9 @@ GPT_SOVITS_ROOT=/path/to bash setup.sh
 
 ```bash
 cd GPT-SoVITS
-git apply ../XiangHua/patches/pinyin.patch          # 打广普补丁（训练前做一次）
-cp ../XiangHua/scripts/sitecustomize.py GPT_SoVITS/         # Windows 音频修复（可选）
-python ../XiangHua/tools/local_tts.py 台词.txt 输出目录
+git apply ../patches/pinyin.patch                    # 打广普补丁（训练前做一次）
+cp ../scripts/sitecustomize.py GPT_SoVITS/           # Windows 音频修复（可选）
+python ../XiangHua/scripts/local_tts.py 台词.txt 输出目录
 ```
 
 **台词文件**：UTF-8 编码，一行一句（建议 5~20 字），`#` 开头为注释。写普通话即可；默认不做口音替换，需要时用 `ACCENT_LEVEL` 或 WebUI 的“口音档位”控制。
@@ -59,7 +59,7 @@ python ../XiangHua/tools/local_tts.py 台词.txt 输出目录
 ```bash
 # 用环境变量覆盖模型路径的示例
 GPT_MODEL=/path/to/model.ckpt SOVITS_MODEL=/path/to/model.pth \
-python tools/local_tts.py 台词.txt out/
+python scripts/local_tts.py 台词.txt out/
 ```
 
 ## 20 句回归与客观验收
@@ -120,8 +120,8 @@ python tools/local_tts.py 台词.txt out/
 XiangHua/
 ├── backend/             # FastAPI 合成、训练、音色服务
 ├── frontend/            # Vue 3 WebUI
-├── tools/               # local_tts / webui / train
-├── scripts/             # 训练链、数据准备、验收
+├── tools/               # gpt_sovits 补丁 / webui 入口 / 训练后端垫片
+├── scripts/             # 训练链、数据准备、验收、local_tts、experiments
 ├── GPT-SoVITS/          # GPT-SoVITS v2Pro 引擎与模型
 ├── assets/              # 口音包清单、Logo（旧台词本仅作可选示例）
 ├── docs/                # 架构、产品、训练与使用文档

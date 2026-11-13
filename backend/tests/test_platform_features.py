@@ -35,7 +35,7 @@ class LexiconApiTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         lexicon_file = Path(self._tmp.name) / "lexicon.json"
         patcher = mock.patch(
-            "backend.services.user_lexicon.lexicon_path", return_value=lexicon_file
+            "backend.domain.user_lexicon.lexicon_path", return_value=lexicon_file
         )
         patcher.start()
         self.addCleanup(patcher.stop)

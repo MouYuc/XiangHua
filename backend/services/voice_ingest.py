@@ -23,8 +23,8 @@ import librosa
 import numpy as np
 import soundfile as sf
 
+from backend.infra.gpu import GPU_ARBITER
 from backend.services import media_diarization, reference_audio, whisper_cache
-from backend.services.gpu_arbiter import GPU_ARBITER
 
 MIN_SELECTED_SECONDS = 1.8
 MAX_SELECTED_SECONDS = 10.0

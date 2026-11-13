@@ -1,80 +1,28 @@
 /**
- * 参考音质量门禁的前端类型与纯逻辑。
+ * 参考音质量门禁的前端纯逻辑（展示层）。
  *
  * 页面外壳在 `components/ReferenceAudioReport.vue`：这里只放能被单元测试直接
- * 调用的部分（类型、状态文案、指标格式化、结论汇总）。这样「不合格的项必须
+ * 调用的部分（状态文案、指标格式化、结论汇总）。这样「不合格的项必须
  * 一条都不漏地显示出来」这类产品约束可以脱离 DOM 验证。
  *
  * 判据全部来自后端 `backend/services/reference_audio.py` 的确定性 DSP 测量；
  * 前端不做任何自己的判断，只负责如实呈现，避免两套阈值。
+ *
+ * 报告类型（ReferenceReport 及其家族）定义在 `lib/api/types`——它们是后端
+ * 响应契约的一部分；这里反向导入并 re-export，保持既有 import 路径可用，
+ * 同时消除 lib→composables 的反向依赖。
  */
 
-export type ReferenceCheckStatus = 'ok' | 'warn' | 'fail'
-export type ReferenceStatus = ReferenceCheckStatus | 'unknown'
+import type { ReferenceCheck, ReferenceReport } from '../lib/api'
 
-export type ReferenceCheck = {
-  key: string
-  label: string
-  status: ReferenceCheckStatus
-  measured: unknown
-  threshold: string
-  message: string
-}
-
-export type ReferenceMetrics = {
-  duration_seconds?: number
-  sample_rate?: number
-  channels?: number
-  clipping_ratio?: number
-  clipping_run?: number
-  dc_offset?: number
-  silence_ratio?: number
-  speech_spans?: number
-  estimated_snr_db?: number | null
-  quiet_headroom_db?: number | null
-  speech_level_dbfs?: number | null
-  noise_floor_dbfs?: number | null
-  rolloff_99_hz?: number | null
-  high_band_db?: number | null
-  high_band_ratio?: number | null
-  peak_dbfs?: number
-  rms_dbfs?: number
-  crest_db?: number
-  f0?: {
-    analyzed_seconds: number
-    voiced_ratio: number
-    f0_median_hz: number
-    f0_p05_hz: number
-    f0_p95_hz: number
-    f0_range_semitones: number
-  }
-}
-
-export type ReferenceReport = {
-  path?: string
-  purpose: string
-  purpose_label?: string
-  status: ReferenceStatus
-  duration_seconds?: number
-  sample_rate?: number
-  channels?: number
-  metrics?: ReferenceMetrics
-  checks?: ReferenceCheck[]
-  notes?: string[]
-  blocking?: string[]
-  warnings?: string[]
-  blocking_checks?: string[]
-  warning_checks?: string[]
-  total_seconds?: number
-  files?: number
-  aggregate?: ReferenceMetrics
-  per_file_counts?: Record<string, number>
-  worst_file?: { path: string; status: ReferenceStatus; checks: ReferenceCheck[] }
-  /** Only present when the backend could not analyse the clip at all. */
-  error?: string
-}
-
-export type ReferenceInspectKind = 'file' | 'corpus'
+export type {
+  ReferenceCheck,
+  ReferenceCheckStatus,
+  ReferenceInspectKind,
+  ReferenceMetrics,
+  ReferenceReport,
+  ReferenceStatus,
+} from '../lib/api'
 
 export const REFERENCE_STATUS_LABELS: Record<string, string> = {
   ok: '可用',

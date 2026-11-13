@@ -9,7 +9,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from backend.schemas import ConfigUpdate
-from backend.services import core, synthesis_jobs
+from backend.services import config_store, core, synthesis_jobs
 
 
 def valid_config(root: Path) -> dict[str, object]:
@@ -101,7 +101,9 @@ class SynthesisOrbEventTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config_dir = Path(directory)
             config_file = config_dir / "config.json"
-            with patch.object(core, "CONFIG_DIR", config_dir), patch.object(core, "CONFIG_FILE", config_file):
+            # 配置读写实体已迁 backend.services.config_store；persist 路径只认
+            # 该模块的 CONFIG_FILE（core.save/load 是它的 re-export）。
+            with patch.object(config_store, "CONFIG_FILE", config_file):
                 core.save_config({**core.load_config(), "orb_synthesis_token_color": "#123abc", "orb_settled_color": "#456def", "orb_playback_token_color": "#f8fbff"})
                 loaded = core.load_config()
 
@@ -114,7 +116,7 @@ class SynthesisOrbEventTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config_dir = Path(directory)
             config_file = config_dir / "config.json"
-            with patch.object(core, "CONFIG_DIR", config_dir), patch.object(core, "CONFIG_FILE", config_file):
+            with patch.object(config_store, "CONFIG_FILE", config_file):
                 core.save_config({**core.load_config(), "orb_synthesis_token_color": "#111111"})
                 self.assertTrue(config_file.is_file())
                 self.assertFalse((config_dir / "config.json.tmp").exists())

@@ -42,6 +42,7 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
+EXPERIMENTS_DIR = SCRIPTS_DIR / "experiments"
 DEFAULT_FIXTURE = REPO_ROOT / "backend" / "tests" / "fixtures" / "tts_regression_20.json"
 DEFAULT_OUT_DIR = REPO_ROOT / "output" / "tts_regression"
 if str(REPO_ROOT) not in sys.path:
@@ -629,8 +630,8 @@ class CerEvaluator:
             return
         self._attempted = True
         try:
-            if str(SCRIPTS_DIR) not in sys.path:
-                sys.path.insert(0, str(SCRIPTS_DIR))
+            if str(EXPERIMENTS_DIR) not in sys.path:
+                sys.path.insert(0, str(EXPERIMENTS_DIR))
             from asr_readback import cer as cer_function
             from five_language_verify import LanguageIdentifier
 
@@ -682,8 +683,8 @@ class SecsEvaluator:
             self.reason = f"参考音频不存在：{self.reference_audio}"
             return
         try:
-            if str(SCRIPTS_DIR) not in sys.path:
-                sys.path.insert(0, str(SCRIPTS_DIR))
+            if str(EXPERIMENTS_DIR) not in sys.path:
+                sys.path.insert(0, str(EXPERIMENTS_DIR))
             from speaker_embedding import SpeakerEmbedder, cosine_similarity
 
             self._embedder = SpeakerEmbedder(device=self.device)

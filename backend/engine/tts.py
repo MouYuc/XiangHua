@@ -32,8 +32,8 @@ from backend.domain.text import (
     to_engine_segments,
     trim_segment_edges,
 )
+from backend.infra.gpu import GPU_ARBITER, GpuBusyTimeout
 from backend.infra.logging import get_logger
-from backend.services.gpu_arbiter import GPU_ARBITER, GpuBusyTimeout
 
 logger = get_logger("xianghua.engine")
 

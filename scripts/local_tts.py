@@ -2,7 +2,7 @@
 广普本地配音工具（基于 GPT-SoVITS v2Pro）
 
 用法：
-    python local_tts.py 台词.txt [输出目录]
+    python scripts/local_tts.py 台词.txt [输出目录]
 
 台词文件：UTF-8，一行一句（建议一句 5~20 字）。
 输出：每句一个 mp3，命名 001_台词前几字.mp3。
@@ -20,16 +20,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from backend.infra.gptsovits_env import resolve_default_environment_root
 from backend.services.core import SynthesisBackend
 from backend.services.pronunciation import build_pronunciation_plan
-from tools.env import resolve_default_environment_root
 from tools.rules import safe_name
 
-GPT_SOVITS_ROOT = os.path.abspath(resolve_default_environment_root(Path(__file__).resolve().parents[1]))
+GPT_SOVITS_ROOT = os.path.abspath(resolve_default_environment_root(Path(__file__).resolve().parents[2]))
 
 import soundfile as sf
 
@@ -80,7 +80,7 @@ _BACKEND = SynthesisBackend()
 
 def main():
     if len(sys.argv) < 2:
-        print("用法: python local_tts.py 台词.txt [输出目录]")
+        print("用法: python scripts/local_tts.py 台词.txt [输出目录]")
         return
     src = sys.argv[1]
     if not os.path.exists(src):

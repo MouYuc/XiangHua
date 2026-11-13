@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 <#
-GuangPu-TTS 一键环境安装（Windows）
+像话 XiangHua 一键环境安装（Windows）
 
 用法：
     .\setup.ps1                        # 默认从 ModelScope 下载底模
@@ -23,10 +23,10 @@ if (-not $GPT_SOVITS_ROOT) {
     $GPT_SOVITS_ROOT = Join-Path $RepoRoot "GPT-SoVITS"
 }
 $GPT_SOVITS_ROOT = [System.IO.Path]::GetFullPath($GPT_SOVITS_ROOT)
-$VENV = Join-Path $GPT_SOVITS_ROOT ".venv"
+$VENV = Join-Path $RepoRoot ".venv"
 
 Write-Host ""
-Write-Host "=== GuangPu-TTS 一键环境安装 (Windows) ===" -ForegroundColor Green
+Write-Host "=== 像话 XiangHua 一键环境安装 (Windows) ===" -ForegroundColor Green
 Write-Host "GPT-SoVITS 位置: $GPT_SOVITS_ROOT"
 Write-Host ""
 
@@ -104,5 +104,5 @@ Pop-Location
 Write-Host ""
 Write-Host "=== 安装完成 ===" -ForegroundColor Green
 Write-Host "下一步：按 docs/TRAINING_GUIDE.md 录 5~15 分钟素材并训练你的广普音色"
-Write-Host "合成：GPT_SOVITS_ROOT=$GPT_SOVITS_ROOT 后运行 tools\local_tts.py 台词.txt 输出目录"
+Write-Host "合成：GPT_SOVITS_ROOT=$GPT_SOVITS_ROOT 后运行 scripts\local_tts.py 台词.txt 输出目录"
 Write-Host "WebUI：GPT_SOVITS_ROOT=$GPT_SOVITS_ROOT 后运行 python tools\webui.py（浏览器打开 http://127.0.0.1:7860）"

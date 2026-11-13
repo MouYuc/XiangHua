@@ -27,7 +27,7 @@ feature code is reproduced here with explicit paths instead, so the result does 
 depend on the working directory.
 
 Usage:
-    .venv\\Scripts\\python.exe scripts\\speaker_embedding.py a.wav b.wav
+    .venv\\Scripts\\python.exe scripts\\experiments\\speaker_embedding.py a.wav b.wav
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from pathlib import Path
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 GPT_SOVITS_ROOT = REPO_ROOT / "GPT-SoVITS"
 ERES2NET_DIR = GPT_SOVITS_ROOT / "GPT_SoVITS" / "eres2net"

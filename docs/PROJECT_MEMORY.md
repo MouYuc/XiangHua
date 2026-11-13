@@ -1,7 +1,7 @@
 # 项目持久记忆
 
-更新时间：2026-11-01
-状态：架构分层与工程化基建完成（见 0j 与 `docs/REFACTOR_2026-11.md`）；清晰优先基线已用本人真实声音验证
+更新时间：2026-11-13
+状态：架构分层与工程化基建完成（见 0j 与 `docs/REFACTOR_2026-11.md`）；清晰优先基线已用本人真实声音验证；2026-11-13 完成磁盘瘦身与结构收敛（0k）及大文件拆分与分层归位（0l）
 
 这份文档是后续会话的项目级记忆入口。开始任务前先读 `AGENTS.md` 和本文件；如果知识图谱已被重建，再检查 `.code-review-graph/graph.db`。当前图谱已在清场时删除，后续按需重建。完整交接见 `docs/HANDOFF.md`。
 
@@ -185,6 +185,55 @@
 - 仍未做（下一轮候选）：JSON 未换 SQLite（用户既有决定）；`output/` 与媒体会话无自动清理定时器；
   `doctor.py` 覆盖率 21%；合成页 SSE 与 500ms 轮询并存（共用 revision 守卫，不会重复应用）。
 
+## 0k. 2026-11-13 磁盘瘦身与工程结构收敛（本轮）
+
+**磁盘瘦身（共回收约 5.1GB，均经用户确认）**：
+
+- 删除 `TEMP/` 全部 5.0GB（含 `acceptance_hutao` 4.0GB 验收产物与 `handover_cleanup` 0.9GB 旧训练资产唯一备份——**旧切片/旧权重备份已不可还原**，用户拍板删除）；
+- 删除根目录 `GPT_SoVITS/` 空壳（仅 1 个旧 `tts_infer.yaml`，后端引擎 cwd 恒为 `GPT-SoVITS/` 连字符目录、配置程序化传参，零引用）、`.coverage`、`.playwright-cli/`、`.ruff_cache/`、`.zcode/`、frontend 下杂项；`.pytest_cache/` 因 ACL 锁死无法删除（见下"遗留"）；
+- 删除过期文档 `docs/MVP_VALIDATION.md`、`CORE_ARCHITECTURE_AUDIT.md`、`MEDIA_INGEST_HANDOVER.md`、`docs/superpowers/` 与被否设计稿 `design/A-bright.html`、`B-dark.html`（git 历史仍可找回）；
+- `frontend/public/logo.png` 1024px 1.16MB → 256px 84KB（仅作 favicon 用）。
+
+**结构收敛（全部"新家 + 旧位垫片"，行为保持）**：
+
+- 训练后端收编：`tools/train.py`(897) → `backend/services/training.py`，`tools/env.py`(96) → `backend/infra/gptsovits_env.py`；旧位留 re-export 垫片，backend 内 import 全部直连，消除 backend↔tools 双向耦合；
+- GPU 租约迁 infra：`services/gpu_arbiter.py` → `backend/infra/gpu.py`（`GPU_ARBITER` 单例同一），engine/pipeline 不再依赖 services；
+- 路径常量下沉：新建 `backend/infra/paths.py`（16 个纯常量），path_guard/provenance/user_lexicon/voice_assets/voice_selection 改直连；`SUPPORTED_SYNTHESIS_LANGUAGES` 直接取自 `backend/domain/text.py`（避免双源）；retention.py 因还用 core.load_history 且测试 patch core 属性，有意保留经 core 读路径；
+- 死代码：删 `tools/_check_batch.py`（0 引用）；`tools/local_tts.py` → `scripts/local_tts.py`；6 个实验期脚本归位 `scripts/experiments/`（five_language_verify/f0_estimate/sing_convert/speaker_embedding/asr_readback/smoke_timbre_api），相关 sys.path 自举与测试同步更新；
+- 测试改名：`test_mixed_language_quality_experiment.py` → `test_mixed_language_baseline_experiment.py`（对齐被测模块）；
+- 前端：删死组件 `LanguageMarkerInput.vue`(225 行全仓零引用)、base.css 死选择器 `.qc-row` 与错层 `.wb .inspector`（迁回 WorkbenchView scoped）；
+- 文档失实修正：README/ARCHITECTURE/USAGE_GUIDE/WEBUI_GUIDE 的 kNN-VC"在用"表述改为"已停用"；README 测试数字 543+57；setup.ps1/setup.sh 统一 venv 到仓库根 `.venv`（消除与 README 矛盾）、修 setup.sh 相对路径检查 bug、改题"像话 XiangHua"；patches/README 旧父目录路径修正；B2B 草案顶部加现行架构指向；`REFACTOR_2026-11.md` 顶部状态行改最终数字；
+- 解决工作区 stash 遗留：`.gitignore` 的 `UU` 冲突按双方取超集解决，结果与 HEAD 完全一致，git 状态恢复全绿。
+
+**验证**：后端 `pytest -q` **546 passed / 4 skipped**（+44 subtests；skips=GPU 3 + g2p 数据缺失 1，与基线一致）、`ruff check backend tools scripts` 全绿；前端 **58 passed**（+1，死组件删除后测试全过）、`vue-tsc` 与 `vite build` 通过（CSS 32.4KB）。
+
+**遗留（下一轮候选）**：根目录 `.pytest_cache/` 因 Windows ACL 锁死无法删除——工作区属主是另一 Windows 账户（SID 后缀 -1001，当前进程用户 -1008），需用户手动 `takeown` 后删除或以资源管理器删除；`docs/HANDOFF.md` 旧路径文案未更新（顶部已标过期指向 REFACTOR）；`media_ingest(1508)/reference_audio(1005)/timbre(730)/job_registry(707)/core(777)` 五个大文件拆分未做；`WorkbenchView.vue`(551) 拆分未做；`lib/api.ts`(374) 按域拆分未做；`output/` 约 250 个历史合成目录可用 `POST /api/maintenance/prune` 清理（未动）。
+
+## 0l. 2026-11-13 结构整理第二阶段：大文件拆分与分层归位（0k 遗留清单执行）
+
+同日接续 0k，用子 agent 分三波完成 0k 遗留的全部结构项，**全程行为保持（新家 + 旧位垫片），三轮全量验证零漂移**。
+
+**第一波**：
+- `media_ingest.py` 1508 → **56 行门面**：拆出 `media_sessions.py`（684，会话存储/上传/ffmpeg 抽轨）与 `media_analysis.py`（732，VAD/聚类/切片/转写/导出激活，`MediaAnalysisMixin`）；3 处 patch 缝同步改测试到新家，其余经门面保真（同一对象已验证）。
+- `reference_audio.py` 1005 → **660 行**：拆出 `reference_audio_metrics.py`（282，测量原语层）；原文件保留 DSP 门禁判定（实际内容是纯门禁，同步上传/自动建档本就在 voice_ingest/voice_prepare_jobs）。
+- 前端 `lib/api.ts` 374 → **18 行 re-export 入口**：拆出 `lib/api/` 下 types.ts(314)/client.ts(95) + 按域端点模块（reference/voiceCards/jobs/history/lexicon/dialogue/export/provenance）；ReferenceReport 类型族从 composables 上移到 lib/api/types，**lib→composables 反向依赖消除**。
+- 前端 `WorkbenchView.vue` 551 → **381 行**：声音检查器整块抽成 `components/workbench/InspectorPanel.vue`（215 行，样式与文案逐字不变，五个单例 composable 组件内复用）。
+
+**第二波**：
+- `job_registry.py` 707 → **165 行门面**：拆出 common(184)/synthesis(154)/timbre(105)/training(137)/media(76) 五个按 kind 的收集器文件；收集器保持 lazy import 读模块属性模式，全部 patch 缝天然保真，test_job_registry.py 零改动。
+- `timbre.py` 730 → **70 行门面**：拆出 timbre_refs(165)/timbre_features(142)/timbre_worker(462)；**顺手消除 timbre.py 的 sys.path hack**——`knnvc_runtime` 改为 `importlib.util.spec_from_file_location` 按路径加载并缓存（scripts/knnvc_runtime.py 原地不动）；仅 1 处 patch 缝改到真模块（test_timbre_backend_flow 的 reference_files → timbre_features）。
+
+**第三波**：
+- **domain 倒置环修复**：`pronunciation.py`(204)、`user_lexicon.py`(121) 搬入 `backend/domain/`，原位留 15/18 行垫片；text.py/pipeline/core/voice_assets/routers 改直连；**grep 确认 domain 包内零 `backend.services` import**。1 处字符串 patch 改到真模块（test_platform_features → backend.domain.user_lexicon.lexicon_path）。
+- **core.py 767 → 365 行**：配置读写 → `config_store.py`(102)、history/downloads → `history_store.py`(149)、environment_check/training_stats → `doctor.py`（并解除 doctor 对 core 的依赖防环）。`patch.object(core, ...)` 缝逐条核验：因 core 保留全量 re-export 且 hooks 调用时从 core 命名空间现读，仅 1 处（CONFIG_FILE patch）改到 config_store；`hasattr(core,"_CONFIG_LOCK")` 契约保留。
+- **app.py 188 → 146 行**：兼容 re-export 块删除（真身早已在 deps.py），4 处测试 import 迁到 `backend.api.deps`，全仓零 `backend.app._*` 残留。
+
+**最终数字**：后端 `pytest -q` **546 passed / 4 skipped（+44 subtests）**与 0k 基线逐位一致（skip=GPU 3 + g2p 数据 1）、`ruff` 全绿；前端 **58 passed**、`vue-tsc` 与 `vite build` 通过（178.2KB JS / 32.5KB CSS，与基线持平）。本轮净新增约 30 个文件（新模块 + 垫片），全仓无超过 800 行的 Python 文件（scripts/tts_regression.py 1114 行除外，属回归台架 CLI）。
+
+**新遗留（下一轮候选）**：`_CONFIG_LOCK/_DOWNLOADS_LOCK` 在 core 已无实际使用者（真锁在 jsonstore），仅为 hasattr 兼容断言保留；`timbre_worker.py` 462 行为最内聚粒度不再拆；8 个测 backend 之外代码的测试文件仍在 backend/tests（迁移需同步 pyproject/CI，未做）；`output/` 历史目录清理仍可用 `POST /api/maintenance/prune`。
+
+---
+
 ## 0. 2026-10-17 清场记录
 
 已删除：
@@ -203,8 +252,8 @@
 - `GPT-SoVITS/GPT_weights_v2Pro/`、`SoVITS_weights_v2Pro/` 的最终权重；
 - `GPT-SoVITS` 引擎、底模、辅助模型；
 - `.venv/`、`frontend/node_modules/`、`.guangpu_webui/models/`、`reference_audio/`；
-- `third_party/knn-vc/`：当前音色转换链路仍在用；
-- `.worktrees/`：两个旧 worktree 仍有未提交改动，未删除，需用户确认后再处理。
+- `third_party/knn-vc/`：当前音色转换链路仍在用；**（2026-11-13 更正：该目录实际已不存在，kNN-VC 音色转换链路处于停用状态，需要时按上游仓库克隆恢复；`scripts/knnvc_runtime.py` 与 `backend/services/timbre.py` 代码保留。）**
+- `.worktrees/`：两个旧 worktree 仍有未提交改动，未删除，需用户确认后再处理。**（2026-11-13 更正：`git worktree list` 现只剩主工作区，旧 worktree 已不在。）**
 
 清场未提交，也未 push。
 
@@ -278,7 +327,7 @@
 - 回归台架：`scripts/tts_regression.py` + `backend/tests/fixtures/tts_regression_20.json`；报告写入 `output/tts_regression/report.json`。
 - 训练管线仍在：`scripts/run_dataset_prep.py`、`scripts/run_training_chain.py`、`scripts/verify_training_loop.py`、`tools/train.py`。
 - 声音档案/口音包抽象仍在：`backend/services/voice_selection.py`、`assets/accent_packs.json`；口音包资产尚未补齐。
-- kNN-VC 语音音色转换链路保留：`scripts/knnvc_runtime.py`、`backend/services/timbre.py`、`third_party/knn-vc/`。
+- kNN-VC 语音音色转换链路保留：`scripts/knnvc_runtime.py`、`backend/services/timbre.py`、`third_party/knn-vc/`。**（2026-11-13 更正：`third_party/knn-vc/` 已不存在，链路停用；代码侧 `backend/infra/gpu.py` 等见 0k。）**
 
 ---
 

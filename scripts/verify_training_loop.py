@@ -11,7 +11,7 @@ while sounding like someone else. The only way to close the loop without listeni
 measure speaker identity with a model that is independent of the one trained.
 
 The measurement is SECS (speaker-embedding cosine similarity) with ERes2NetV2 from
-``scripts/speaker_embedding.py`` - the same independent embedder the timbre features use.
+``scripts/experiments/speaker_embedding.py`` - the same independent embedder the timbre features use.
 The verdict is not an absolute threshold but a **relative** one, because absolute SECS
 depends on channel and language:
 
@@ -39,6 +39,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "experiments"))
 
 DEFAULT_TEXT = "这是用训练出来的音色合成的试音，用来验证训练闭环是否真的通了。"
 

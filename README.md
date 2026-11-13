@@ -13,11 +13,11 @@
 - 保留用户原始录音、切片、ASR、最终权重、当前模型和运行环境；
 - 默认合成已切到“清晰优先”：底模 v2Pro + 清晰参考音，默认 `accent_level=off`；
 - 首轮 MVP 已跑通：20 句固定回归、档位化发音层、参考音/文本配对；
-- **工程化基线已建立**（2026-11）：依赖锁定、ruff 静态检查、CI（后端 505 + 前端 50 测试）、
+- **工程化基线已建立**（2026-11）：依赖锁定、ruff 静态检查、CI（后端 543 + 前端 57 测试）、
   结构化日志、JSON 持久化并发安全、磁盘保留策略；后端按 `infra / domain / services / api` 分层，
   `app.py` 从 1085 行单函数拆为 178 行组合根 —— 详见 [审查与重构记录](docs/REFACTOR_2026-11.md)；
 - 音色入口改为**一段自然说话音频**：系统自动切片、识别、选参考片段，用户不需要照读台词本或补录口音；
-- 验证结果见 [MVP 验证记录](docs/MVP_VALIDATION.md)，新架构与产品路线见：
+- 新架构与产品路线见：
   - [架构：音色/发音/韵律/口音四分离](docs/ARCHITECTURE.md)
   - [B2B 角色声线 API 与授权策略](docs/B2B_VOICE_API_STRATEGY.md)
   - [项目持久记忆](docs/PROJECT_MEMORY.md)
@@ -61,7 +61,7 @@
 ### 2. 命令行批量合成
 
 ```powershell
-& .venv\Scripts\python.exe tools\local_tts.py examples\台词示例_普通话输入.txt out\
+& .venv\Scripts\python.exe scripts\local_tts.py examples\台词示例_普通话输入.txt out\
 ```
 
 可用环境变量覆盖：
@@ -131,9 +131,7 @@ cd frontend; npm ci; npm test; npm run build
 
 - [审查与重构记录（2026-11）](docs/REFACTOR_2026-11.md) ← 先看这个
 - [交接文档](docs/HANDOFF.md)（2026-10-17 版，已部分过期，架构以重构记录为准）
-- [核心架构自检](docs/CORE_ARCHITECTURE_AUDIT.md)
 - [/v1 API 契约](docs/API_V1.md)
-- [MVP 验证记录](docs/MVP_VALIDATION.md)
 - [架构：四分离](docs/ARCHITECTURE.md)
 - [B2B API 与授权策略](docs/B2B_VOICE_API_STRATEGY.md)
 - [项目记忆](docs/PROJECT_MEMORY.md)
@@ -198,7 +196,7 @@ backend/
   infra/            基础设施：atomic（原子写）/ jsonstore（带锁版本化持久化）/ logging / ids
   services/         业务服务：core、媒体入库、声线卡、发音、GPU 租约、任务注册表、保留策略
   schemas.py        请求模型
-  tests/            505 项后端测试
+  tests/            543 项后端测试
 frontend/           Vue 3 WebUI（工作台 / 声音库 / 记录 + 弹窗设置）
 tools/              本地合成、WebUI 启动、训练封装
 scripts/            训练链、数据集准备、验收与回归脚本
@@ -207,7 +205,7 @@ assets/             口音包与风格包清单、Logo
 docs/               架构、产品、训练与使用文档（先看 REFACTOR_2026-11.md）
 examples/           示例台词
 patches/            发音补丁
-third_party/knn-vc/ 当前音色转换链路
+third_party/knn-vc/ kNN-VC 音色转换链路（已停用：第三方目录未随仓库分发，需要时按上游仓库克隆）
 .github/workflows/  CI（ruff + 后端测试 + 前端测试与构建）
 ```
 

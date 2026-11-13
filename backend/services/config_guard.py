@@ -56,7 +56,7 @@ def _inside(value: Path, roots: list[Path]) -> bool:
 
 def _scanned_roots() -> set[str]:
     """Engine roots the environment scanner can discover on this machine."""
-    from tools.env import scan_gpt_sovits_roots
+    from backend.infra.gptsovits_env import scan_gpt_sovits_roots
 
     try:
         return {str(Path(item).resolve()) for item in scan_gpt_sovits_roots(path_guard.REPO_ROOT)}

@@ -25,8 +25,8 @@ logarithmic: a 10 Hz error is large at 110 Hz and negligible at 880 Hz. The
 conversion is ``1200 * log2(f_estimated / f_reference)``.
 
 Usage:
-    .venv\\Scripts\\python.exe scripts\\f0_estimate.py --validate
-    .venv\\Scripts\\python.exe scripts\\f0_estimate.py path\\to\\vocal.wav
+    .venv\\Scripts\\python.exe scripts\\experiments\\f0_estimate.py --validate
+    .venv\\Scripts\\python.exe scripts\\experiments\\f0_estimate.py path\\to\\vocal.wav
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # CREPE is trained at 16 kHz and its published results are all at that rate, so the
 # audio is resampled rather than fed at 44.1 kHz.

@@ -1,6 +1,6 @@
 """Unit tests for the personal-timbre service's own logic.
 
-The kNN-VC path itself is covered by ``scripts/smoke_timbre_api.py``, which drives
+The kNN-VC path itself is covered by ``scripts/experiments/smoke_timbre_api.py``, which drives
 the real model end to end. These tests cover everything *around* the model - the
 parts that decide which recordings define a voice, whether a cached matching pool
 is still valid, and where an upload is allowed to land. Every one of those

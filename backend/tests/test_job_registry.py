@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.services import core, synthesis_jobs, timbre, voice_prepare_jobs
+from backend.services import training as train_backend
 from backend.services.job_registry import (
     JOB_REGISTRY,
     JobRegistry,
@@ -28,7 +29,6 @@ from backend.services.job_registry import (
 )
 from backend.services.synthesis_jobs import SynthesisJobManager
 from backend.services.voice_prepare_jobs import VoicePrepareJobManager
-from tools import train as train_backend
 
 JOB_FIELDS = {
     "job_id",

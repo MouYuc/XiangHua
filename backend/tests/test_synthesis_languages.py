@@ -7,7 +7,8 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from backend.app import _merge_config, create_app
+from backend.api.deps import _merge_config
+from backend.app import create_app
 from backend.schemas import ConfigUpdate
 from backend.services import core
 

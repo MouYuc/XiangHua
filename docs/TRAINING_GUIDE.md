@@ -207,7 +207,7 @@ python -s GPT_SoVITS/s2_train.py --config TEMP/tmp_s2.json
 # 用环境变量指定模型路径（Windows 用 $env:GPT_MODEL=... 形式，路径同样换成你的产物）
 GPT_MODEL=../GPT-SoVITS/GPT_weights_v2Pro/myvoice-e14.ckpt \
 SOVITS_MODEL=../GPT-SoVITS/SoVITS_weights_v2Pro/myvoice_e12_s396.pth \
-python tools/local_tts.py 台词.txt out/
+python scripts/local_tts.py 台词.txt out/
 ```
 
 - **不满意先调参数**：卡顿/噪点 → 确认 `SAMPLE_STEPS` ≥ 64、换更干净的参考片段；语气生硬 → 微调 `TEMPERATURE`（默认 0.95）；都试过仍不行，再补充更多**已有自然说话录音**，不要求照台词本补录

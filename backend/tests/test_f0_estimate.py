@@ -2,7 +2,7 @@
 
 These tests are about the arithmetic and the guards, not about the estimator's
 accuracy - accuracy is validated against Vocadito's hand annotations by
-``scripts/f0_estimate.py --validate`` (median error 8.6 cents, raw pitch accuracy
+``scripts/experiments/f0_estimate.py --validate`` (median error 8.6 cents, raw pitch accuracy
 0.982) and that measurement is recorded in the project history.
 
 Three defects found while building this are pinned here, because each one produced a
@@ -30,9 +30,9 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = REPO_ROOT / "scripts"
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
+EXPERIMENTS = REPO_ROOT / "scripts" / "experiments"
+if str(EXPERIMENTS) not in sys.path:
+    sys.path.insert(0, str(EXPERIMENTS))
 
 import f0_estimate as f0
 

@@ -34,12 +34,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from backend.services.core import CONFIG_DIR, REPO_ROOT, SUPPORTED_SYNTHESIS_LANGUAGES
-from backend.services.pronunciation import (
+from backend.domain.pronunciation import (
     LEXICON_ZH_BASE,
     accent_intensity_for,
     build_pronunciation_plan,
 )
+from backend.domain.text import SUPPORTED_SYNTHESIS_LANGUAGES
+from backend.infra.paths import CONFIG_DIR, REPO_ROOT
 
 STYLE_PACK_FILE = REPO_ROOT / "assets" / "style_packs.json"
 DEFAULT_VOICE_CARDS_DIR = CONFIG_DIR / "voice_cards"

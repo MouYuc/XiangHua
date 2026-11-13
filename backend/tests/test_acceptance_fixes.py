@@ -54,18 +54,18 @@ class TrainingCommandTests(unittest.TestCase):
 
 class UploadFilenameTests(unittest.TestCase):
     def test_latin1_mojibake_is_recovered(self) -> None:
-        from backend.app import _upload_filename
+        from backend.api.deps import _upload_filename
 
         decoded_by_starlette = "胡桃.mp4".encode().decode("latin-1")
         self.assertEqual(_upload_filename(SimpleNamespace(filename=decoded_by_starlette)), "胡桃.mp4")
 
     def test_real_utf8_name_is_kept(self) -> None:
-        from backend.app import _upload_filename
+        from backend.api.deps import _upload_filename
 
         self.assertEqual(_upload_filename(SimpleNamespace(filename="胡桃.mp4")), "胡桃.mp4")
 
     def test_missing_filename_uses_fallback(self) -> None:
-        from backend.app import _upload_filename
+        from backend.api.deps import _upload_filename
 
         self.assertEqual(_upload_filename(SimpleNamespace(filename=None), "media"), "media")
 

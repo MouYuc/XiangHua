@@ -19,7 +19,8 @@ generator is consumed, not while the HTTP request is handled, so a long analysis
 still lets the other path queue behind it instead of deadlocking.
 
 Patching seam: callers keep their own module-level ``_load_whisper`` wrapper, so
-existing tests can still patch ``media_ingest._load_whisper``.
+existing tests can still patch ``media_analysis._load_whisper`` (the media
+ingest facade ``media_ingest`` re-exports it under its historical name).
 """
 
 from __future__ import annotations

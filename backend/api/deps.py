@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request, UploadFile
 
+from backend.infra.gpu import GPU_ARBITER
 from backend.infra.logging import get_logger
 from backend.schemas import (
     ConfigUpdate,
@@ -24,20 +25,19 @@ from backend.services import (
     core,
     media_ingest,
 )
-from backend.services.gpu_arbiter import GPU_ARBITER
 from backend.services.job_registry import JOB_REGISTRY
 from backend.services.request_guard import api_key_registry
 from backend.services.synthesis_jobs import SYNTHESIS_JOBS
 from backend.services.timbre import TIMBRE_BACKEND
-from backend.services.voice_assets import VoiceCardStore
-from backend.services.voice_prepare_jobs import VOICE_PREPARE_JOBS
-from backend.services.voice_selection import apply_voice_selection, list_voice_options
-from tools.train import (
+from backend.services.training import (
     job_log_path,
     last_job_id,
     step_status,
     tail_log,
 )
+from backend.services.voice_assets import VoiceCardStore
+from backend.services.voice_prepare_jobs import VOICE_PREPARE_JOBS
+from backend.services.voice_selection import apply_voice_selection, list_voice_options
 
 logger = get_logger("xianghua.api")
 

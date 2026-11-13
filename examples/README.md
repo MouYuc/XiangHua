@@ -8,7 +8,7 @@
 ## 1. 普通话输入（自动转轻中广普）
 
 ```bash
-python ../tools/local_tts.py 台词示例_普通话输入.txt ../output
+python ../scripts/local_tts.py 台词示例_普通话输入.txt ../output
 ```
 
 输入写普通话，工具自动转换：是→系、不是→唔系、最重要→最紧要、
@@ -17,7 +17,7 @@ python ../tools/local_tts.py 台词示例_普通话输入.txt ../output
 ## 2. 广普直写（精确控制浓度）
 
 ```bash
-python ../tools/local_tts.py 台词示例_广普直写.txt ../output
+python ../scripts/local_tts.py 台词示例_广普直写.txt ../output
 ```
 
 台词直接写粤字，读音由广普词典保证（系→hei1、嘅→ge3、㗎→ga3 等）。

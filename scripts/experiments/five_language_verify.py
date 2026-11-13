@@ -24,8 +24,8 @@ Per-language CER is reported as an **intelligibility guardrail only**. Seed-TTS
 standardised, less accented* speech, so CER must never be read as a fidelity score.
 
 Usage:
-    .venv\\Scripts\\python.exe scripts\\five_language_verify.py
-    .venv\\Scripts\\python.exe scripts\\five_language_verify.py --skip-synthesis   # reuse the last run
+    .venv\\Scripts\\python.exe scripts\\experiments\\five_language_verify.py
+    .venv\\Scripts\\python.exe scripts\\experiments\\five_language_verify.py --skip-synthesis   # reuse the last run
 """
 
 from __future__ import annotations
@@ -37,9 +37,10 @@ import sys
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "experiments"))
 
 # One short, unambiguous sentence per language. Kept apart from the mixed line so a
 # language failure cannot be blamed on the mixing.
@@ -182,7 +183,7 @@ def prosody(path: str | Path) -> dict:
     """
     import soundfile as sf
 
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "experiments"))
     from f0_estimate import estimate as estimate_f0
 
     track = estimate_f0(path, "pyin")

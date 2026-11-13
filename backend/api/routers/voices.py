@@ -8,6 +8,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 
 from backend.api import deps
+from backend.domain import user_lexicon
 from backend.schemas import (
     LexiconUpsertRequest,
     ReferenceAudioRequest,
@@ -19,7 +20,6 @@ from backend.services import (
     core,
     reference_audio,
     reference_prompt,
-    user_lexicon,
     voice_assets,
     voice_ingest,
 )

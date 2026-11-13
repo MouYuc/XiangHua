@@ -371,7 +371,7 @@ manifest 必须带：
 | `backend/services/reference_audio.py` | 参考音质检 | 保留，更新阈值与注释 |
 | `backend/services/voice_ingest.py` | 单音频自动切片/ASR/选参考片段 | 新增；用户只上传一段自然说话音频；支持进度回调 |
 | `backend/services/voice_prepare_jobs.py` | 单音频自动建档的异步 job | 新增；避免长录音阻塞 HTTP，前端轮询进度 |
-| `third_party/knn-vc/` | 音色转换 | 暂留，作为 timbre 候选/对照 |
+| `third_party/knn-vc/` | 音色转换 | 已停用：第三方目录未随仓库分发，需要时按上游仓库克隆 |
 
 ---
 
@@ -412,7 +412,7 @@ manifest 必须带：
 
 同文本四档交换（只改口音、不换文本/音色）：CER 3.33% / 3.45% / 13.79% / 20.69%，SECS 0.805 / 0.801 / 0.779 / 0.795；同样指向“口音变重、音色稳定、可懂度下降”。
 
-完整记录见 `docs/MVP_VALIDATION.md`。
+完整数据即本节数字（原完整记录文档 `docs/MVP_VALIDATION.md` 已删除）。
 
 ---
 

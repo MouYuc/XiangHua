@@ -20,8 +20,8 @@ The first run is the expensive one (WavLM-Large over 64 reference slices, then
 over the source); later runs reuse the cached pool.
 
 Usage:
-    .venv\\Scripts\\python.exe scripts\\smoke_timbre_api.py
-    .venv\\Scripts\\python.exe scripts\\smoke_timbre_api.py --topk 1 --device cpu
+    .venv\\Scripts\\python.exe scripts\\experiments\\smoke_timbre_api.py
+    .venv\\Scripts\\python.exe scripts\\experiments\\smoke_timbre_api.py --topk 1 --device cpu
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import sys
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

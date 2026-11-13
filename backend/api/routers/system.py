@@ -9,6 +9,8 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from backend.api import deps
+from backend.infra.gptsovits_env import derive_environment_config, scan_gpt_sovits_roots
+from backend.infra.gpu import GPU_ARBITER
 from backend.schemas import (
     ConfigUpdate,
     DoctorRequest,
@@ -19,12 +21,10 @@ from backend.services import (
     voice_assets,
 )
 from backend.services.doctor import run_doctor
-from backend.services.gpu_arbiter import GPU_ARBITER
-from backend.services.voice_selection import list_voice_options
-from tools.env import derive_environment_config, scan_gpt_sovits_roots
-from tools.train import (
+from backend.services.training import (
     load_state as load_train_state,
 )
+from backend.services.voice_selection import list_voice_options
 
 router = APIRouter()
 

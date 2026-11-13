@@ -8,11 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from backend.services.core import (
-    CONFIG_DIR,
-    REPO_ROOT,
-    SUPPORTED_SYNTHESIS_LANGUAGES,
-)
+from backend.domain.text import SUPPORTED_SYNTHESIS_LANGUAGES
+from backend.infra.paths import CONFIG_DIR, REPO_ROOT
 
 VOICE_PROFILE_FILE = CONFIG_DIR / "voice_profiles.json"
 ACCENT_MANIFEST_FILE = REPO_ROOT / "assets" / "accent_packs.json"

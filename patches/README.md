@@ -19,8 +19,8 @@
 ## 应用补丁
 
 ```bash
-cd GPT-SoVITS
-git apply ../XiangHua/patches/pinyin.patch
+# 在仓库根目录执行
+git apply patches/pinyin.patch
 ```
 
 如果 `git apply` 报错（文件已被修改），可以手动按补丁内容编辑两个文件，

@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from backend.services.core import REPO_ROOT
+from backend.infra.paths import REPO_ROOT
 
 
 class PathConfinementError(ValueError):

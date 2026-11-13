@@ -39,9 +39,9 @@ from backend.api.routers import (
     training,
     voices,
 )
+from backend.infra.gpu import GpuBusyTimeout
 from backend.infra.logging import configure_logging, get_logger
 from backend.services import core, media_ingest
-from backend.services.gpu_arbiter import GpuBusyTimeout
 from backend.services.job_store import JobStore
 from backend.services.request_guard import RequestGuardMiddleware
 from backend.services.synthesis_jobs import SYNTHESIS_JOBS
@@ -51,19 +51,7 @@ logger = get_logger("xianghua.app")
 #: Product routers, in mount order. Each is mounted under both ``/api`` and ``/v1``.
 ROUTERS = (system, synthesis, voices, timbre, dialogue, training, media, platform)
 
-# Re-exported so existing tests and scripts can keep importing them from
-# ``backend.app``; the implementations live in ``backend.api.deps``.
-__all__ = [
-    "SYNTHESIS_JOBS",
-    "_error_code",
-    "_merge_config",
-    "_upload_filename",
-    "app",
-    "create_app",
-]
-_merge_config = deps._merge_config
-_upload_filename = deps._upload_filename
-_error_code = deps._error_code
+__all__ = ["SYNTHESIS_JOBS", "app", "create_app"]
 
 
 @asynccontextmanager

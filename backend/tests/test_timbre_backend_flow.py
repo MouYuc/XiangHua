@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services import timbre
+from backend.services import timbre, timbre_features
 
 
 def _wait_for(predicate, timeout: float = 5.0) -> None:
@@ -151,7 +151,9 @@ class ConversionValidationTests(unittest.TestCase):
 
     def test_building_a_profile_without_references_is_refused(self) -> None:
         backend = timbre.TimbreBackend()
-        with patch.object(timbre, "reference_files", return_value=[]):
+        # ``reference_files`` moved to ``timbre_refs`` and is called from
+        # ``timbre_features``; patch the caller's binding so the refusal fires.
+        with patch.object(timbre_features, "reference_files", return_value=[]):
             with self.assertRaises(ValueError) as caught:
                 backend.build_profile("current", {})
         self.assertIn("没有可用参考音频", str(caught.exception))

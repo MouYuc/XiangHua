@@ -27,8 +27,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.services import media_diarization, media_ingest
-from backend.services.gpu_arbiter import GPU_ARBITER
+from backend.infra.gpu import GPU_ARBITER
+from backend.services import media_analysis, media_diarization, media_ingest, media_sessions
 
 RATE = 16000
 
@@ -176,7 +176,9 @@ class UploadTests(unittest.TestCase):
             service = media_ingest.MediaIngestService(raw)
             session = service.create_session("disk error", rights_declared=True)
             session_dir = Path(raw) / "custom_data" / "media" / session["session_id"]
-            with patch.object(media_ingest, "probe_media", side_effect=OSError("disk full")):
+            # probe_media is looked up in media_sessions, where the upload
+            # preparation that calls it now lives (media_ingest re-exports it).
+            with patch.object(media_sessions, "probe_media", side_effect=OSError("disk full")):
                 with self.assertRaises(OSError):
                     service.ingest_file(session["session_id"], "clip.wav", wav_bytes(two_speaker_audio()))
             self.assertFalse(session_dir.exists())
@@ -312,7 +314,9 @@ class TranscriptNormalizationTests(unittest.TestCase):
             session = service.create_session("asr", rights_declared=True, language="zh")
             segments = [{"segment_id": "seg_0001", "path": "segments/seg_0001.wav", "text": ""}]
             whisper = FakeWhisper()
-            with patch.object(media_ingest, "_load_whisper", return_value=whisper):
+            # _load_whisper is looked up in media_analysis, where the transcription
+            # pipeline that calls it now lives (media_ingest re-exports it).
+            with patch.object(media_analysis, "_load_whisper", return_value=whisper):
                 service._transcribe(session["session_id"], segments, model="tiny", language="zh")
             self.assertEqual(segments[0]["text"], "这是繁体字")
             self.assertNotIn("text_error", segments[0])
@@ -329,7 +333,7 @@ class TranscriptNormalizationTests(unittest.TestCase):
             service = media_ingest.MediaIngestService(raw)
             session = service.create_session("asr", rights_declared=True, language="yue")
             segments = [{"segment_id": "seg_0001", "path": "segments/seg_0001.wav", "text": ""}]
-            with patch.object(media_ingest, "_load_whisper", return_value=FakeWhisper()):
+            with patch.object(media_analysis, "_load_whisper", return_value=FakeWhisper()):
                 service._transcribe(session["session_id"], segments, model="tiny", language="yue")
             self.assertEqual(segments[0]["text"], "係唔係")
 

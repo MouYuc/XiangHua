@@ -14,7 +14,7 @@ from backend.schemas import (
     MediaExportRequest,
     MediaSelectSpeakerRequest,
 )
-from tools.train import (
+from backend.services.training import (
     ST_DONE,
     mark_step,
 )

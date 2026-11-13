@@ -8,16 +8,16 @@ kNN-VC (Baas et al., Interspeech 2023): no fine-tuning, no per-speaker model.
 
 Examples:
     # convert one file using a single reference clip
-    python scripts/sing_convert.py --source song_vocal.wav \
+    python scripts/experiments/sing_convert.py --source song_vocal.wav \
         --reference GPT-SoVITS/custom_data/sliced/训练.wav_0000191040_0000343680.wav \
         --out output/vc/song_user.wav
 
     # use a whole reference directory, caching the encoded frame pool
-    python scripts/sing_convert.py --source song_vocal.wav --reference-dir GPT-SoVITS/custom_data/sliced \
+    python scripts/experiments/sing_convert.py --source song_vocal.wav --reference-dir GPT-SoVITS/custom_data/sliced \
         --reference-cache output/vc/user_matching_set.pt --out output/vc/song_user.wav
 
     # sweep k, which trades source frame variation against timbre match
-    python scripts/sing_convert.py --source song_vocal.wav --reference-dir ... --topk 1 2 4 8
+    python scripts/experiments/sing_convert.py --source song_vocal.wav --reference-dir ... --topk 1 2 4 8
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# sing_convert 与 knnvc_runtime 不同层：本文件在 scripts/experiments/ 下，
+# knnvc_runtime 留在 scripts/，所以自举要指向上层的 scripts 目录。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from knnvc_runtime import (
     DEFAULT_CHUNK_SECONDS,
