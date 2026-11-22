@@ -34,6 +34,11 @@ jobs:
           python-version: "3.10"
           cache: pip
       - run: pip install -r requirements-ci.txt
+      - name: Install ffmpeg
+        # The media pipeline (transcode/probe/export) shells out to ffmpeg/ffprobe
+        # via PATH; ubuntu runners do not ship it. This is a ~40MB system tool,
+        # not a model — installing it keeps those tests covered for real.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Run the suite
         # test_gpt_sovits_mixed_language_patch imports torch at module scope and
         # needs the vendored engine tree, neither of which exists in CI. It is

@@ -205,15 +205,24 @@ class PronunciationPatchSwitchTests(unittest.TestCase):
             self.assertEqual(response.status_code, 403)
 
     def test_enabled_but_out_of_scope_patch_is_rejected(self) -> None:
+        # 引擎根目录是本地 26GB 级资产，CI 上不存在；越界拒绝发生在任何
+        # 文件/git 操作之前（core.apply_pronunciation_patch 的作用域检查），
+        # 因此用临时目录自建根目录即可真实覆盖守卫逻辑。
+        import tempfile
+
         with _set_env(XIANGHUA_ALLOW_PRONUNCIATION_PATCH="1"):
             patch_text = (
                 "diff --git a/GPT_SoVITS/text/chinese.py b/GPT_SoVITS/text/chinese.py\n"
                 "GP_PINYIN\n"
                 "diff --git a/GPT_SoVITS/TTS_infer_pack/TTS.py b/GPT_SoVITS/TTS_infer_pack/TTS.py\n"
             )
-            response = self._upload(patch_text)
-            self.assertEqual(response.status_code, 400)
-            self.assertIn("GPT_SoVITS/text", response.json()["detail"])
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                core, "load_config", return_value={"gpt_sovits_root": tmp}
+            ):
+                (Path(tmp) / "GPT_SoVITS").mkdir()
+                response = self._upload(patch_text)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("GPT_SoVITS/text", response.json()["detail"])
 
 
 class MediaUploadCapTests(unittest.TestCase):

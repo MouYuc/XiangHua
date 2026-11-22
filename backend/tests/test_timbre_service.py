@@ -149,12 +149,18 @@ class SourceListingTests(unittest.TestCase):
         """Two rows reading the same name are indistinguishable to the user.
 
         Synthesis writes into per-experiment directories, so collisions are normal
-        rather than exceptional.
+        rather than exceptional. Paths must be built natively: a backslash literal
+        is not a separator on POSIX, where ``Path.parent`` would be empty.
         """
+        from pathlib import Path
+
+        def qualified(directory: str, name: str) -> str:
+            return str(Path("out") / directory / name)
+
         rows = [
-            {"label": "001_hello.mp3", "path": r"G:\out\alpha\001_hello.mp3"},
-            {"label": "001_hello.mp3", "path": r"G:\out\beta\001_hello.mp3"},
-            {"label": "002_unique.mp3", "path": r"G:\out\beta\002_unique.mp3"},
+            {"label": "001_hello.mp3", "path": qualified("alpha", "001_hello.mp3")},
+            {"label": "001_hello.mp3", "path": qualified("beta", "001_hello.mp3")},
+            {"label": "002_unique.mp3", "path": qualified("beta", "002_unique.mp3")},
         ]
         labelled = timbre.disambiguate_labels(rows)
         self.assertEqual(
