@@ -69,8 +69,13 @@ def collect_media(registry: Any) -> list[dict[str, Any]]:
                 error=_text(job.get("error")),
                 started_at=started_at,
                 updated_at=_text(session.get("updated_at")) or started_at,
-                cancelable=False,
+                # 分析支持协作式取消（当前片段结束后停止）
+                cancelable=status == "running",
                 source="backend.services.media_ingest.session.json",
             )
         )
     return records
+
+
+def cancel_media_analysis(registry: Any, job_id: str) -> dict[str, Any]:
+    return media_service(registry).cancel_analysis(job_id)

@@ -23,9 +23,10 @@ const saving = ref(false)
 const confirmed = ref(false)
 
 const step = computed<1 | 2 | 3 | 4>(() => {
+  // 步进只由本次向导的上传/质检状态驱动。配置里永远有 ref_audio（「当前音色」也靠它），
+  // 不能把它当作"本次已建档"——否则向导打开就直接跳到第 4 步，把旧参考音当成新素材。
   if (reference.uploading.value) return 2
   if (reference.report.value) return confirmed.value ? 4 : 3
-  if (config.ref_audio) return 4
   return 1
 })
 
@@ -94,7 +95,7 @@ async function finish() {
 
     <div class="page-h" style="margin-bottom:10px">
       <div>
-        <h1>从录音建档声音</h1>
+        <span class="lbl pg-title">从录音建档声音</span>
         <p class="sub">你只需确认质检结果并命名，其余全自动。请确认素材来源合法合规。</p>
       </div>
     </div>
@@ -169,4 +170,9 @@ async function finish() {
 <style scoped>
 .flow{max-width:640px;margin:0 auto;padding:20px 20px 50px}
 .panel-warn{border-color:var(--warn-bd)}
+/* 皮肤对齐 design/D-focus.html：标题与分区标题用 .lbl（mono 11px），面板直角 2px。 */
+.pg-title{font-size:12px;color:var(--text2);display:block;padding-bottom:2px}
+.page-h .sub{font-family:var(--mono);font-size:11px;color:var(--text3);letter-spacing:.04em;margin-top:3px}
+.panel h3{font-family:var(--mono);font-size:11px;font-weight:400;letter-spacing:.14em;color:var(--text3)}
+.panel h3 b,.panel h3 .tag{letter-spacing:normal}
 </style>

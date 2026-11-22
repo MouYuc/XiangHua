@@ -650,6 +650,233 @@ class MediaSessionStore:
         ).start()
         return session
 
+    def ingest_files(
+        self,
+        session_id: str,
+        files: list[tuple[str, BinaryIO]],
+        *,
+        autostart_analysis: bool = False,
+        speaker_count: int | None = None,
+        transcribe: bool = False,
+    ) -> dict[str, Any]:
+        """Store one or more uploaded recordings as ONE analysis session.
+
+        单文件行为与 :meth:`ingest_file` 完全一致。多文件时逐个校验落盘，
+        再各自转码为分析(16k)/导出(32k)两档 wav，以 0.45s 静音拼接成单一音源，
+        之后走完全相同的分析管线——用户不再需要手工合并素材。
+        """
+        session = self.load(session_id)
+        if not session.get("rights", {}).get("declared"):
+            raise MediaIngestError("该会话没有权利声明，不能上传媒体。")
+        if session.get("source"):
+            raise MediaIngestError("该会话已经有媒体文件，请新建一个采集会话再上传。")
+        if not files:
+            raise MediaIngestError("没有收到任何媒体文件。")
+
+        directory = self.session_dir(session_id)
+        limit = max_media_bytes()
+        saved: list[tuple[str, Path]] = []
+        written_total = 0
+        try:
+            for index, (filename, stream) in enumerate(files):
+                safe_name = Path(str(filename or "media")).name
+                suffix = Path(safe_name).suffix.lower()
+                if suffix not in SUPPORTED_MEDIA_SUFFIXES:
+                    raise MediaIngestError(f"不支持的文件类型：{suffix or '未知'}（{safe_name}）。")
+                stem = Path(safe_name).stem or f"clip{index + 1}"
+                # 保序 + 防重名：01_xxx / 02_yyy
+                target = directory / "source" / f"{index + 1:02d}_{stem}{suffix}"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                written = 0
+                with target.open("wb") as output:
+                    while chunk := stream.read(1024 * 1024):
+                        written += len(chunk)
+                        written_total += len(chunk)
+                        if written_total > limit:
+                            raise MediaIngestError(
+                                f"上传的媒体总大小不能超过 {limit // (1024 * 1024)} MB。"
+                            )
+                        output.write(chunk)
+                if target.stat().st_size == 0:
+                    target.unlink(missing_ok=True)
+                    raise MediaIngestError(f"上传的文件为空：{safe_name}。")
+                saved.append((safe_name, target))
+        except BaseException:
+            self._discard_session_without_source(session_id)
+            raise
+
+        if len(saved) == 1:
+            name, path = saved[0]
+            session["job"] = {
+                "status": "uploading",
+                "stage": "转码中",
+                "progress": 0.0,
+                "message": "正在读取媒体信息并转码。",
+                "error": "",
+            }
+            self.save(session)
+            threading.Thread(
+                target=self._prepare_uploaded_media,
+                args=(session_id, path, name),
+                kwargs={
+                    "autostart_analysis": autostart_analysis,
+                    "speaker_count": speaker_count,
+                    "transcribe": transcribe,
+                },
+                daemon=True,
+                name=f"media-prepare-{session_id}",
+            ).start()
+            return self.load(session_id)
+
+        session["job"] = {
+            "status": "uploading",
+            "stage": "转码中",
+            "progress": 0.0,
+            "message": f"正在转码并拼接 {len(saved)} 个文件。",
+            "error": "",
+        }
+        self.save(session)
+        threading.Thread(
+            target=self._prepare_uploaded_media_files,
+            args=(session_id, saved),
+            kwargs={
+                "autostart_analysis": autostart_analysis,
+                "speaker_count": speaker_count,
+                "transcribe": transcribe,
+            },
+            daemon=True,
+            name=f"media-prepare-multi-{session_id}",
+        ).start()
+        return self.load(session_id)
+
+    def _prepare_uploaded_media_files(
+        self,
+        session_id: str,
+        saved: list[tuple[str, Path]],
+        *,
+        autostart_analysis: bool = False,
+        speaker_count: int | None = None,
+        transcribe: bool = False,
+    ) -> None:
+        """多文件版本：拼接转码 → 与单文件一致的 ready/失败落账。"""
+        try:
+            self._prepare_media_files_sync(session_id, saved)
+        except Exception as exc:
+            logger.error("多文件转码失败：%s", exc)
+            error_text = str(exc)
+            self.patch(
+                session_id,
+                lambda fresh: {
+                    **fresh,
+                    "job": {
+                        "status": "fail",
+                        "stage": "转码失败",
+                        "progress": 0.0,
+                        "message": "媒体转码失败。",
+                        "error": error_text,
+                    },
+                },
+            )
+            return
+        if autostart_analysis:
+            try:
+                self.start_analysis(session_id, speaker_count=speaker_count, transcribe=transcribe)
+            except MediaIngestError as exc:
+                message = str(exc)
+                self.patch(
+                    session_id,
+                    lambda fresh, message=message: {
+                        **fresh,
+                        "job": {
+                            "status": "fail",
+                            "stage": "无法开始分析",
+                            "progress": 0.0,
+                            "message": message,
+                            "error": message,
+                        },
+                    },
+                )
+
+    def _prepare_media_files_sync(self, session_id: str, saved: list[tuple[str, Path]]) -> None:
+        directory = self.session_dir(session_id)
+        analysis_dir = directory / "analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        combined_analysis = analysis_dir / "source_16k.wav"
+        combined_export = analysis_dir / "source_32k.wav"
+        # 逐文件转码为两档 wav，再以 0.45s 静音拼接——VAD 会在静音处自然切句
+        for rate, destination in (
+            (ANALYSIS_SAMPLE_RATE, combined_analysis),
+            (EXPORT_SAMPLE_RATE, combined_export),
+        ):
+            self._concat_wavs([path for _name, path in saved], rate, destination)
+        probe = probe_media(combined_export)
+        display_name = " + ".join(name for name, _path in saved)
+        source = {
+            "filename": display_name,
+            "path": self._relative(session_id, saved[0][1]),
+            "analysis_audio": self._relative(session_id, combined_analysis),
+            "export_audio": self._relative(session_id, combined_export),
+            "duration_seconds": probe["duration_seconds"],
+            "codec": probe["codec"],
+            "sample_rate": probe["sample_rate"],
+            "channels": probe["channels"],
+            "size_bytes": probe["size_bytes"],
+            "sha256": _sha256_file(combined_export),
+            # 多文件会话保留各源文件明细（filename/path 相对化）
+            "sources": [
+                {"filename": name, "path": self._relative(session_id, path)}
+                for name, path in saved
+            ],
+        }
+
+        def apply_ready(fresh: dict[str, Any]) -> dict[str, Any]:
+            return {
+                **fresh,
+                "source": source,
+                "job": {
+                    "status": "idle",
+                    "stage": "等待分析",
+                    "progress": 0.0,
+                    "message": f"已合并 {len(saved)} 个文件，可以开始说话人分离。",
+                    "error": "",
+                },
+                "speakers": [],
+                "segments": [],
+                "runs": [],
+                "active_run": "",
+                "selected_speaker": "",
+                "dataset": None,
+            }
+
+        self.patch(session_id, apply_ready)
+
+    def _concat_wavs(self, parts: list[Path], rate: int, destination: Path) -> None:
+        """同格式 wav 顺序拼接，段间补 0.45s 静音（单条 ffmpeg 完成）。"""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        inputs: list[str] = []
+        pads: list[str] = []
+        concats: list[str] = []
+        for index, part in enumerate(parts):
+            inputs += ["-i", str(part)]
+            pads.append(f"[{index}:a]apad=pad_dur=0.45[a{index}]")
+            concats.append(f"[a{index}]")
+        filter_complex = (
+            ";".join(pads) + ";" + "".join(concats) + f"concat=n={len(parts)}:v=0:a=1[out]"
+        )
+        _run_command(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                *inputs,
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-vn", "-ac", "1", "-ar", str(rate),
+                "-c:a", "pcm_s16le",
+                str(destination),
+            ]
+        )
+        if not destination.is_file() or destination.stat().st_size == 0:
+            raise MediaIngestError("多文件拼接失败：输出为空。")
+
     def _prepare_uploaded_media(
         self,
         session_id: str,
@@ -746,6 +973,33 @@ class MediaSessionStore:
         self.patch(session_id, apply_ready)
 
     # --------------------------------------------------------------- select ---
+
+    def cancel_analysis(self, session_id: str) -> dict[str, Any]:
+        """请求取消一次进行中的媒体分析。
+
+        两层语义：**立即**把任务标记为已取消（UI/任务中心马上释放，进度轮询
+        不再追踪它），同时在会话里留下 ``cancel_requested`` 标记——分析线程
+        若还活着，会在下一个片段边界发现标记并中止（协作式，当前片段结束后
+        停止）；若线程真卡死在单个 GPU 调用里，其最终结果也会被丢弃（收尾
+        写回见 cancel_requested 守卫），重启后端即可彻底释放 GPU。
+        """
+        session = self.load(session_id)
+        job = session.get("job") or {}
+        if str(job.get("status")) not in {"running", "queued"}:
+            return {"cancelled": False, "reason": "该会话没有正在进行的分析。"}
+
+        def request_cancel(fresh: dict[str, Any]) -> dict[str, Any]:
+            fresh["job"] = {
+                **(fresh.get("job") or {}),
+                "status": "cancelled",
+                "stage": "已取消",
+                "cancel_requested": True,
+                "message": "已取消（正在通知分析线程停止）。",
+            }
+            return fresh
+
+        self.patch(session_id, request_cancel)
+        return {"cancelled": True, "reason": "任务已标记为取消；GPU 在当前调用返回后释放。"}
 
     def select_speaker(self, session_id: str, speaker_id: str) -> dict[str, Any]:
         session = self.load(session_id)

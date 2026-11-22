@@ -15,7 +15,7 @@ import VoiceWizardView from '@/views/VoiceWizardView.vue'
 import WorkshopView from '@/views/WorkshopView.vue'
 import HistoryView from '@/views/HistoryView.vue'
 
-const { page, meta, setPage, navPages } = usePage()
+const { page, meta, setPage, navPages, isVoiceSubFlow } = usePage()
 const configStore = useConfig()
 const { config, loadConfig, savedAt } = configStore
 const synthesis = useSynthesis()
@@ -25,11 +25,6 @@ const { theme, toggleTheme } = useTheme()
 const settingsOpen = ref(false)
 const cmdkOpen = ref(false)
 
-const NAV_ICONS: Record<string, string> = {
-  workbench: 'M15.5 8.5a3.5 3.5 0 1 0-7 0|M4 12h16v3a8 8 0 0 1-16 0z|M12 3v2',
-  voices: 'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z|M19 10v2a7 7 0 0 1-14 0v-2|M12 19v3',
-  history: 'M12 3a9 9 0 1 0 9 9|M12 7v5l3 2',
-}
 const NAV_LABELS: Record<string, string> = { workbench: '工作台', voices: '声音库', history: '记录' }
 
 const savedAtText = computed(() => {
@@ -59,55 +54,61 @@ onMounted(() => {
 
 <template>
   <div class="app-shell">
-    <!-- 侧栏 -->
-    <aside class="side">
-      <div class="brand"><span class="brand-mark">话</span><b>像话</b></div>
-      <nav class="side-nav">
-        <button
-          v-for="item in navPages"
-          :key="item"
-          type="button"
-          :class="{ active: page === item }"
-          @click="setPage(item)"
-        >
-          <svg class="ic sm" viewBox="0 0 24 24">
-            <path v-for="(d, index) in (NAV_ICONS[item] || '').split('|')" :key="index" :d="d" />
-          </svg>
-          {{ NAV_LABELS[item] }}
-          <span v-if="item === 'voices' && voices.voiceCount.value" class="n">{{ voices.voiceCount.value }}</span>
-        </button>
-      </nav>
-      <div class="side-foot">
-        <button class="eng" type="button" @click="settingsOpen = true">
-          <span class="st" :class="engineState.tone"></span>{{ engineState.label }} · v2Pro
-        </button>
-        <div class="side-foot-row">
+    <div class="page">
+      <!-- 顶部导航（D 稿） -->
+      <nav class="nav">
+        <div class="brand">
+          <b>像话</b>
+          <span>XIANGHUA</span>
+        </div>
+
+        <div class="nav-links">
+          <button
+            v-for="item in navPages"
+            :key="item"
+            type="button"
+            :class="{ on: page === item || (item === 'voices' && isVoiceSubFlow) }"
+            @click="setPage(item)"
+          >
+            {{ NAV_LABELS[item] }}
+          </button>
+        </div>
+
+        <div class="nav-right">
+          <span v-if="savedAtText" class="autosave">{{ savedAtText }}</span>
+
+          <!-- 引擎状态（mono 小字状态点，点击打开设置） -->
+          <button class="eng" type="button" :title="`${engineState.label} · v2Pro · 打开设置`" @click="settingsOpen = true">
+            <span class="st" :class="engineState.tone"></span>{{ engineState.label }}
+          </button>
+
+          <!-- 搜索 ⌘K -->
+          <button class="kmd-btn" type="button" title="搜索或跳转 (⌘K)" @click="cmdkOpen = true">
+            <svg class="ic sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5 21 21" /></svg>
+            <span class="kmd-txt">搜索</span>
+            <kbd>⌘K</kbd>
+          </button>
+
+          <!-- 任务中心（徽标在组件内） -->
+          <TaskCenter />
+
+          <!-- 设置 -->
+          <button class="icon-btn" type="button" title="设置" @click="settingsOpen = true">
+            <svg class="ic sm" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M12 2.6v2.7M12 18.7v2.7M2.6 12h2.7M18.7 12h2.7M5.2 5.2l1.9 1.9M16.9 16.9l1.9 1.9M18.8 5.2l-1.9 1.9M7.1 16.9l-1.9 1.9" />
+            </svg>
+          </button>
+
+          <!-- 主题切换（浅色纸面为主，功能保留） -->
           <button class="icon-btn" type="button" title="切换亮/暗主题" @click="toggleTheme">
             <svg v-if="theme === 'dark'" class="ic sm" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
             <svg v-else class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
           </button>
-          <button class="icon-btn" type="button" title="设置" @click="settingsOpen = true">
-            <svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z" /></svg>
-          </button>
         </div>
-      </div>
-    </aside>
+      </nav>
 
-    <div class="main-col">
-      <!-- 顶栏 -->
-      <header class="topbar">
-        <div class="crumb">{{ meta.crumb }}</div>
-        <span v-if="savedAtText" class="autosave">{{ savedAtText }}</span>
-        <div class="top-right">
-          <button class="kmd-btn" type="button" @click="cmdkOpen = true">
-            搜索或跳转… <kbd>⌘K</kbd>
-          </button>
-          <TaskCenter />
-          <span class="avatar-me">Z</span>
-        </div>
-      </header>
-
-      <div class="content-col">
+      <main class="content">
         <KeepAlive include="WorkbenchView">
           <WorkbenchView v-if="page === 'workbench'" />
           <VoicesView v-else-if="page === 'voices'" />
@@ -115,7 +116,7 @@ onMounted(() => {
           <WorkshopView v-else-if="page === 'workshop'" />
           <HistoryView v-else />
         </KeepAlive>
-      </div>
+      </main>
     </div>
 
     <!-- 弹窗 -->

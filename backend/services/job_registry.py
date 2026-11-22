@@ -169,6 +169,10 @@ class JobRegistry:
                 if cancelled:
                     return {"cancelled": True, "reason": "已发送终止信号。"}
                 return {"cancelled": False, "reason": "训练任务当前没有可终止的进程。"}
+            if kind == KIND_MEDIA_ANALYSIS:
+                from backend.services.job_registry_media import cancel_media_analysis
+
+                return cancel_media_analysis(self, wanted)
         except Exception as exc:
             return {"cancelled": False, "reason": f"取消失败：{type(exc).__name__}: {exc}"}
         return {"cancelled": False, "reason": _UNSUPPORTED_CANCEL_REASON}

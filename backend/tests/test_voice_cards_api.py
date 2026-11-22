@@ -77,6 +77,33 @@ class VoiceCardRouteTests(unittest.TestCase):
     def test_v1_mirror_serves_the_same_surface(self) -> None:
         self.assertEqual(self.client.get("/v1/voice-cards").status_code, 200)
 
+    def test_delete_removes_card_and_list_shrinks(self) -> None:
+        card = self.client.post(
+            "/api/voice-cards", json={"display_name": "待删卡", "language": "zh"}
+        ).json()["card"]
+        deleted = self.client.delete(f"/api/voice-cards/{card['voice_id']}")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertIn("已删除", deleted.json()["message"])
+        listed = self.client.get("/api/voice-cards")
+        self.assertEqual(len(listed.json()["cards"]), 0)
+        self.assertEqual(self.client.get(f"/api/voice-cards/{card['voice_id']}").status_code, 404)
+
+    def test_delete_unknown_card_is_404(self) -> None:
+        self.assertEqual(self.client.delete("/api/voice-cards/no_such_card").status_code, 404)
+
+    def test_delete_card_in_use_is_rejected(self) -> None:
+        """正在用于合成的卡必须先切换，防止配置引用被删卡。"""
+        created = self.client.post(
+            "/api/voice-cards", json={"display_name": "使用中", "language": "zh"}
+        ).json()["card"]
+        self.client.post(f"/api/voice-cards/{created['voice_id']}/activate")
+        with mock.patch.object(
+            app_module.core, "load_config", return_value={"voice_card_id": created["voice_id"]}
+        ):
+            response = self.client.delete(f"/api/voice-cards/{created['voice_id']}")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("正在用于合成", response.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

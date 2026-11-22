@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, UPLOAD_TIMEOUT_MS } from '@/lib/api'
 import { usePage } from '@/composables/usePage'
 import { useTraining } from '@/composables/useTraining'
 import { useToast } from '@/composables/useToast'
 import { usePolling } from '@/composables/usePolling'
 import AudioPlayer from '@/components/AudioPlayer.vue'
+import LossChart from '@/components/LossChart.vue'
 
 defineOptions({ name: 'WorkshopView' })
 
@@ -40,6 +41,7 @@ type MediaSession = {
   session_id: string
   name: string
   language: string
+  created_at?: string
   source: { filename: string; duration_seconds: number; codec: string; sample_rate: number; channels: number } | null
   job: MediaJob
   speakers: MediaSpeaker[]
@@ -71,6 +73,9 @@ const step = computed<Step>(() => {
   if (!session.value.selected_speaker) return 2
   if (!activated.value) return 2
   if (training.runState.value === 'running') return 4
+  // 训练失败时留在训练步并给出失败原因与日志，绝不默默踢回校对步；
+  // 其余状态（含 activate 重置后的 pending/未开始）一律回第 3 步走正常流程
+  if (training.step('train').status === 'fail') return 4
   if (training.step('train').status === 'done') return 5
   return 3
 })
@@ -85,9 +90,10 @@ const steps = [
 
 async function onFile(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
+  // 支持一次选择多个音频文件：同一会话内逐个转码再拼接成一个音源
+  const files = [...(input.files ?? [])]
   input.value = ''
-  if (!file) return
+  if (!files.length) return
   if (!rights.value) {
     toast.error('请先确认你有权将该素材用于声音训练。')
     return
@@ -95,8 +101,8 @@ async function onFile(event: Event) {
   busy.value = true
   try {
     const body = new FormData()
-    body.append('recording', file)
-    body.append('name', file.name.replace(/\.[^.]+$/, ''))
+    for (const file of files) body.append('recording', file)
+    body.append('name', files.length > 1 ? `${files[0]!.name.replace(/\.[^.]+$/, '')} 等 ${files.length} 个文件` : files[0]!.name.replace(/\.[^.]+$/, ''))
     body.append('language', uploadLanguage.value)
     body.append('rights_declared', 'true')
     body.append('transcribe', 'true')
@@ -105,6 +111,7 @@ async function onFile(event: Event) {
     })
     session.value = data.session
     startPolling(data.session.session_id)
+    toast.success(data.message)
   } catch (error) {
     toast.error(error instanceof Error ? error.message : String(error))
   } finally {
@@ -173,6 +180,9 @@ async function activate() {
     activated.value = true
     toast.success(data.message || `已写入训练工作区（${data.copied} 个切片）。`)
     await training.refresh()
+    // 写入完成后立刻把转写装进内存：第 3 步的「保存并继续」以它为准，
+    // 不加载就点保存会把 corrected 清单覆盖成空（曾导致特征提取拿到 0 句）。
+    await training.loadTranscript()
   } catch (error) {
     toast.error(error instanceof Error ? error.message : String(error))
   } finally {
@@ -191,14 +201,14 @@ async function scanModels() {
   setPage('workbench')
 }
 
-// 训练运行时轮询（同一套轮询器：失败重试、无重叠、卸载自动停）
+// —— 训练运行时轮询：任何训练类任务（特征提取/训练）在跑就持续拉取，
+// 状态跳变（如特征提取完成 → 开始训练点亮）不再错过。页面卸载自动停。
+// 注意契约：run 返回 false = 停止轮询；这里什么都不返回（= 持续轮询）。
 const trainPoller = usePolling({
   interval: 3000,
   immediate: false,
   run: async () => {
-    if (training.runState.value !== 'running') return true
     await training.refresh()
-    return true
   },
 })
 
@@ -206,10 +216,65 @@ function ensureTrainPolling() {
   if (!trainPoller.active()) trainPoller.start()
 }
 
+// 多文件会话的源文件名是「a.mp3 + b.mp3 + …」全量拼接，超长会撑爆标题行。
+// 展示层收敛：前两个 + 「共 N 个」；完整名单保留在 title 悬停里。
+const sourceDisplay = computed(() => {
+  const name = session.value?.source?.filename || ''
+  const parts = name.split(' + ')
+  if (parts.length <= 3) return name
+  return `${parts[0]} + ${parts[1]} + … 共 ${parts.length} 个文件`
+})
+
+// 校对自动保存：编辑后 800ms 防抖静默保存，刷新/误关不再丢稿。
+// 行为对齐配置抽屉的 650ms 防抖模式；空清单交给后端守卫拒绝。
+let transcriptSaveTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => training.transcript.value.map((row) => row.text),
+  () => {
+    if (!training.transcriptLoaded.value || training.actionBusy.value) return
+    if (!training.transcript.value.length) return
+    if (transcriptSaveTimer) clearTimeout(transcriptSaveTimer)
+    transcriptSaveTimer = setTimeout(() => {
+      transcriptSaveTimer = null
+      void training.saveTranscript(true)
+    }, 800)
+  },
+  { deep: true },
+)
+
 onMounted(() => {
   void training.refresh()
   ensureTrainPolling()
+  // 刷新后恢复：校对步骤已到过 done 而内存里没有转写时，自动重新加载。
+  if (training.step('correct').status === 'done' && !training.transcriptLoaded.value) {
+    void training.loadTranscript()
+  }
+  // 从任务中心/别的页面跳转过来时恢复采集会话：优先正在转码/分析的会话，
+  // 否则恢复最近的一个——否则这里永远是第 1 步，看不到任何任务进度。
+  void restoreSession()
 })
+
+async function restoreSession() {
+  if (session.value) return
+  try {
+    const data = await api.get<{ rows: MediaSession[] }>('/api/media/sessions')
+    const rows = [...(data.rows || [])].sort((a, b) =>
+      String(b.created_at || '').localeCompare(String(a.created_at || '')),
+    )
+    if (!rows.length) return
+    const active = rows.find((row) => ['uploading', 'running'].includes(String(row.job?.status || ''))) || rows[0]
+    const full = await api.get<{ session: MediaSession }>(
+      `/api/media/sessions/${encodeURIComponent(active.session_id)}`,
+    )
+    session.value = full.session
+    if (full.session.selected_speaker) activated.value = true
+    if (['uploading', 'running'].includes(String(full.session.job?.status || ''))) {
+      startPolling(active.session_id)
+    }
+  } catch {
+    // 会话恢复失败按「新上传」处理，不打扰用户
+  }
+}
 
 onUnmounted(() => {
   stopPolling()
@@ -225,7 +290,7 @@ onUnmounted(() => {
 
     <div class="page-h" style="margin-bottom:10px">
       <div>
-        <h1>声音工作坊</h1>
+        <span class="lbl pg-title">声音工作坊</span>
         <p class="sub">从多人素材到训练出模，一条引导流。</p>
       </div>
     </div>
@@ -243,15 +308,15 @@ onUnmounted(() => {
     <div v-if="step === 1" class="dropzone">
       <svg class="ic" viewBox="0 0 24 24" style="width:26px;height:26px;color:var(--text3)"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M7 10l5 5 5-5" /><path d="M12 15V3" /></svg>
       <h3>上传含多人对话的视频或音频</h3>
-      <p class="d">mp4 / mov / mp3 / wav / m4a · 先提取音轨，再自动说话人分离与切片<br>⚠ BGM、重叠说话会降低准确度</p>
+      <p class="d">mp4 / mov / mp3 / wav / m4a · 可一次选择多个文件，自动合并为一个音源<br>先提取音轨，再自动说话人分离与切片<br>⚠ BGM、重叠说话会降低准确度</p>
       <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);margin-top:10px">
         <input v-model="rights" type="checkbox">
         我确认有权将该素材用于声音训练
       </label>
       <div style="margin-top:10px">
-        <button class="btn-primary" type="button" :disabled="busy" @click="fileInput?.click()">{{ busy ? '分析中…' : '选择文件' }}</button>
+        <button class="btn-primary" type="button" :disabled="busy" @click="fileInput?.click()">{{ busy ? '分析中…' : '选择文件（可多选）' }}</button>
       </div>
-      <input ref="fileInput" type="file" accept="video/*,audio/*,.mp4,.mov,.mp3,.wav,.m4a" style="display:none" @change="onFile">
+      <input ref="fileInput" type="file" multiple accept="video/*,audio/*,.mp4,.mov,.mp3,.wav,.m4a" style="display:none" @change="onFile">
       <div v-if="session && (job.status === 'running' || job.status === 'uploading')" style="margin-top:14px">
         <div style="display:flex;align-items:center;gap:9px">
           <span class="gen-progress" style="height:4px"><span :style="{ width: `${Math.round((job.progress || 0) * 100)}%` }"></span></span>
@@ -266,7 +331,7 @@ onUnmounted(() => {
       <div class="panel">
         <h3>
           谁的声音？
-          <span class="tag mut">{{ session.source?.filename }} · {{ Math.round(session.source?.duration_seconds || 0) }} 秒素材</span>
+          <span class="tag mut" :title="session.source?.filename">{{ sourceDisplay }} · {{ Math.round(session.source?.duration_seconds || 0) }} 秒素材</span>
           <span class="tag" :class="job.status === 'done' ? 'ok' : 'mut'">{{ job.status === 'done' ? '分析完成' : job.stage }}</span>
         </h3>
         <p class="ph">自动分清了 {{ session.speakers.length }} 位说话人，选一个建声。</p>
@@ -298,7 +363,7 @@ onUnmounted(() => {
         <div v-if="training.transcript.value.length" style="margin-top:6px">
           <div v-for="(row, index) in training.transcript.value.slice(0, 8)" :key="row.path" class="check-row">
             <span class="mono" style="font-size:10.5px;color:var(--text3);width:52px;flex:none">{{ row.path.split(/[\\/]/).pop()?.slice(0, 8) }}</span>
-            <input v-model="row.text" style="flex:1;height:26px;border:1px solid var(--border);border-radius:5px;background:var(--surface);padding:0 8px;font:12px var(--font);color:var(--text);outline:none">
+            <input v-model="row.text" style="flex:1;height:26px;border:1px solid var(--border);border-radius:var(--rs);background:var(--surface);padding:0 8px;font:12px var(--font);color:var(--text);outline:none">
             <AudioPlayer v-if="row.audio_url" :src="row.audio_url" compact :title="row.path" />
           </div>
           <p v-if="training.transcript.value.length > 8" class="ph" style="margin-top:6px">其余 {{ training.transcript.value.length - 8 }} 句在保存后于训练工作区继续。</p>
@@ -326,19 +391,20 @@ onUnmounted(() => {
     <!-- 第 4 步：训练中 -->
     <template v-else-if="step === 4">
       <div class="panel">
-        <h3>训练进行中 <span class="tag mut">{{ training.statusText(training.step('train').status) }}</span></h3>
+        <h3>训练进行中 <span class="tag" :class="training.step('train').status === 'fail' ? 'err' : 'mut'">{{ training.statusText(training.step('train').status) }}</span></h3>
+        <div v-if="training.step('train').status === 'fail'" class="fail-note">
+          <b>训练失败。</b> 常见原因在下方日志末尾（Traceback 的最后几行）。修正后可点「重新开始训练」重试。
+        </div>
         <div class="stat-row">
           <div><b>{{ training.stats.value?.lines ?? '—' }}</b><span>训练句数</span></div>
           <div><b>{{ training.latestMetric.value?.loss_g ? Number(training.latestMetric.value.loss_g).toFixed(3) : '—' }}</b><span>loss_g</span></div>
           <div><b>{{ training.checkpointRows.value.length }}</b><span>检查点</span></div>
         </div>
-        <svg v-if="training.lossPath.value.length" class="loss" viewBox="0 0 100 40" preserveAspectRatio="none">
-          <path :d="training.lossPath.value[0]" fill="none" stroke="var(--text2)" stroke-width="1" />
-          <path v-if="training.lossPath.value[1]" :d="training.lossPath.value[1]" fill="none" stroke="var(--border2)" stroke-width="1" stroke-dasharray="2 2" />
-        </svg>
+        <LossChart v-if="training.metricRows.value.length" :rows="training.metricRows.value" />
         <pre class="logbox">{{ training.logText.value.slice(-600) }}</pre>
         <div style="display:flex;gap:8px;margin-top:10px">
-          <button class="btn-secondary" style="color:var(--err);border-color:var(--err-bd)" type="button" :disabled="training.actionBusy.value" @click="training.runAction('/api/training/stop')">停止训练</button>
+          <button v-if="training.step('train').status === 'running'" class="btn-secondary" style="color:var(--err);border-color:var(--err-bd)" type="button" :disabled="training.actionBusy.value" @click="training.runAction('/api/training/stop')">停止训练</button>
+          <button v-else class="btn-primary" type="button" :disabled="training.actionBusy.value || !training.experimentReady.value" @click="training.runAction('/api/training/run', { experiment: training.experiment.value, s1_epochs: training.epochs.s1_epochs, s2_epochs: training.epochs.s2_epochs })">{{ training.step('train').status === 'fail' ? '重新开始训练' : '开始训练' }}</button>
           <button class="btn-ghost" type="button" @click="training.refresh()">刷新状态</button>
           <span style="align-self:center;font-size:11.5px;color:var(--text3)">可关闭页面，任务中心持续跟进</span>
         </div>
@@ -350,9 +416,17 @@ onUnmounted(() => {
       <div class="panel">
         <h3>训练完成 <span class="tag ok">出模</span></h3>
         <p class="ph">训练产物已生成。扫描并把新模型填入引擎配置后，工作台就会用新声音合成。</p>
+        <div class="stat-row">
+          <div><b>{{ training.stats.value?.lines ?? '—' }}</b><span>训练句数</span></div>
+          <div><b>{{ training.latestMetric.value?.loss_g ? Number(training.latestMetric.value.loss_g).toFixed(3) : '—' }}</b><span>loss_g</span></div>
+          <div><b>{{ training.checkpointRows.value.length }}</b><span>检查点</span></div>
+        </div>
+        <LossChart v-if="training.metricRows.value.length" :rows="training.metricRows.value" />
+        <p v-else class="ph" style="margin-top:8px">这一轮还没有可绘制的 loss 曲线（点「刷新状态」重取）。</p>
         <div style="display:flex;gap:8px;margin-top:12px">
           <button class="btn-primary" type="button" :disabled="training.actionBusy.value" @click="scanModels">扫描训练产物并启用</button>
           <button class="btn-secondary" type="button" @click="setPage('workbench')">先回工作台</button>
+          <button class="btn-ghost" type="button" @click="training.refresh()">刷新状态</button>
         </div>
       </div>
     </template>
@@ -361,13 +435,27 @@ onUnmounted(() => {
 
 <style scoped>
 .flow{max-width:720px;margin:0 auto;padding:20px 20px 50px}
+/* 皮肤对齐 design/D-focus.html：标题与分区标题用 .lbl（mono 11px），卡片直角 2px。 */
+.pg-title{font-size:12px;color:var(--text2);display:block;padding-bottom:2px}
+.page-h .sub{font-family:var(--mono);font-size:11px;color:var(--text3);letter-spacing:.04em;margin-top:3px}
+.panel h3{font-family:var(--mono);font-size:11px;font-weight:400;letter-spacing:.14em;color:var(--text3)}
+.panel h3 .tag{letter-spacing:normal}
+.stat-row{display:flex;gap:26px;margin-top:10px;font-size:12px;color:var(--text3)}
+.stat-row b{display:block;font-family:var(--mono);font-size:15px;color:var(--text);font-variant-numeric:tabular-nums}
+.stat-row span{font-size:11px}
+.fail-note{
+  margin-top:10px;padding:8px 10px;font-size:12px;line-height:1.6;color:var(--err);
+  background:var(--err-bg);border:1px solid var(--err-bd);border-radius:var(--r);
+}
+.fail-note b{font-weight:600}
 .spk-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
 .spk-card{border:1px solid var(--border);border-radius:var(--r);padding:12px 13px;cursor:pointer;background:var(--surface);text-align:left;display:flex;flex-direction:column;gap:8px}
-.spk-card.on{border-color:var(--text);box-shadow:0 0 0 1px var(--text)}
+.spk-card:hover{border-color:var(--border2)}
+.spk-card.on{border-color:var(--text)}
 .spk-head{display:flex;align-items:center;gap:8px}
 .spk-head b{font-size:13px;flex:1}
 .spk-meta{font-size:11px;color:var(--text3)}
-.loss{width:100%;height:72px;display:block;border:1px solid var(--border);border-radius:6px;background:var(--surface2);margin-top:10px}
-.logbox{font:10.5px/1.8 var(--mono);color:var(--text2);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 11px;max-height:140px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-top:10px}
+.loss{width:100%;height:72px;display:block;border:1px solid var(--border);border-radius:var(--r);background:var(--surface2);margin-top:10px}
+.logbox{font:10.5px/1.8 var(--mono);color:var(--text2);background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:8px 11px;max-height:140px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin-top:10px}
 @media (max-width:900px){.spk-grid{grid-template-columns:1fr}}
 </style>

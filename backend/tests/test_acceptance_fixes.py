@@ -51,6 +51,38 @@ class TrainingCommandTests(unittest.TestCase):
             pre()  # start_job calls it exactly like this
             self.assertTrue((root / "custom_data" / "dataset" / "logs_s2_v2Pro").is_dir())
 
+    def test_clean_stale_prepare_artifacts_removes_previous_dataset_outputs(self) -> None:
+        """Regression 2026-11-21: stale 2-name2text/6-name2semantic from a previous
+        dataset made GPT-SoVITS skip the text/semantic steps entirely (「产物已存在
+        就整步跳过」), so a 15-segment dataset trained on a 1-segment leftover."""
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset = root / "custom_data" / "dataset"
+            (dataset / "4-cnhubert").mkdir(parents=True)
+            (dataset / "5-wav32k").mkdir()
+            (dataset / "logs_s1_v2Pro" / "ckpt").mkdir(parents=True)
+            (dataset / "logs_s2_v2Pro").mkdir(parents=True)
+            stale = [
+                dataset / "2-name2text-0.txt",
+                dataset / "2-name2text.txt",
+                dataset / "6-name2semantic-0.tsv",
+                dataset / "6-name2semantic.tsv",
+                dataset / "4-cnhubert" / "old.wav.pt",
+                dataset / "5-wav32k" / "old.wav",
+                dataset / "logs_s1_v2Pro" / "ckpt" / "epoch=13-step=42.ckpt",
+                dataset / "logs_s2_v2Pro" / "G_233333333333.pth",
+            ]
+            for path in stale:
+                path.write_text("stale", encoding="utf-8")
+            keep = dataset / "keep.txt"
+            keep.write_text("keep", encoding="utf-8")
+
+            train.clean_stale_prepare_artifacts(str(root))
+
+            for path in stale:
+                self.assertFalse(path.exists(), path)
+            self.assertTrue(keep.exists(), "无关文件不应被误删")
+
 
 class UploadFilenameTests(unittest.TestCase):
     def test_latin1_mojibake_is_recovered(self) -> None:

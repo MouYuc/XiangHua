@@ -34,6 +34,7 @@ from backend.services.training import (  # noqa: F401 - shim re-exports
     _update_step,
     append_metrics,
     apply_patch,
+    clean_stale_prepare_artifacts,
     cmd_asr,
     cmd_build_configs,
     cmd_feat,

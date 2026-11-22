@@ -51,12 +51,23 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeoutMs)
   const isForm = init.body instanceof FormData
+  const method = init.method ?? 'GET'
+  const startedAt = performance.now()
+  // 调试日志：任何 API 调用都会在控制台留痕（方法/路径/耗时/状态）。
+  // 前缀 [xianghua] 方便在控制台里过滤；请求失败或异常也会各留一条。
+  console.debug(`[xianghua] → ${method} ${path}`)
   try {
     const response = await fetch(path, {
       ...init,
       signal: controller.signal,
       headers: isForm || !init.body ? undefined : { 'Content-Type': 'application/json' },
     })
+    const elapsed = Math.round(performance.now() - startedAt)
+    if (!response.ok) {
+      console.warn(`[xianghua] ✗ ${method} ${path} → HTTP ${response.status} (${elapsed}ms)`)
+    } else {
+      console.debug(`[xianghua] ✓ ${method} ${path} → ${response.status} (${elapsed}ms)`)
+    }
     if (response.status === 204) return undefined as T
     const data = await response.json().catch(() => ({}))
     if (!response.ok) {
@@ -65,13 +76,17 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     }
     return data as T
   } catch (error) {
+    const elapsed = Math.round(performance.now() - startedAt)
     // An abort surfaces as a DOMException; turn it into something the UI can show.
     if (error instanceof DOMException && error.name === 'AbortError') {
+      console.warn(`[xianghua] ✗ ${method} ${path} 超时（${timeoutMs}ms）`)
       throw new ApiError('请求超时，请检查后端是否仍在运行。', 0, 'TIMEOUT')
     }
     if (error instanceof TypeError) {
+      console.warn(`[xianghua] ✗ ${method} ${path} 连接失败（${elapsed}ms）`)
       throw new ApiError('无法连接后端服务，请确认它已启动。', 0, 'NETWORK')
     }
+    console.error(`[xianghua] ✗ ${method} ${path} 异常（${elapsed}ms）`, error)
     throw error
   } finally {
     window.clearTimeout(timer)
@@ -84,6 +99,8 @@ export const api = {
     request<T>(path, { ...options, method: 'POST', body: body instanceof FormData ? body : JSON.stringify(body ?? {}) }),
   put: <T>(path: string, body: unknown, options: RequestOptions = {}) =>
     request<T>(path, { ...options, method: 'PUT', body: JSON.stringify(body) }),
+  patch: <T>(path: string, body: unknown, options: RequestOptions = {}) =>
+    request<T>(path, { ...options, method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 }
 

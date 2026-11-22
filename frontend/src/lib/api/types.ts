@@ -14,6 +14,8 @@ export type Config = {
   gpt_sovits_root: string; gpt_model: string; sovits_model: string; ref_audio: string; ref_text: string
   text_lang: SynthesisLanguage; prompt_lang: SynthesisLanguage
   voice_profile_id: string; accent_id: string
+  /** 当前引擎配置登记的声线卡 id；空串 = 未绑定（「当前音色」跟随配置）。 */
+  voice_card_id?: string
   top_k: number; top_p: number; temperature: number; sample_steps: number; speed: number; pause_second: number
   mixed_eos_floor: number | null; mixed_token_cap: number | null
   auto_lightmid: boolean; accent_level: AccentLevel; theme: string
@@ -34,6 +36,15 @@ export type VoiceCardVersionMeta = {
   created_at: string
   notes: string
 }
+export type VoiceCardTimbre = {
+  gpt_model?: string
+  sovits_model?: string
+  ref_audio?: string
+  ref_text?: string
+  prompt_lang?: string
+}
+export type VoiceCardDefaults = Record<string, unknown>
+
 export type VoiceCard = {
   voice_id: string
   display_name: string
@@ -47,6 +58,9 @@ export type VoiceCard = {
   version_count: number
   timbre_available: boolean
   versions: VoiceCardVersionMeta[]
+  /** 当前版本快照里的 timbre（backend `card_public_dict` 透出）。 */
+  active_timbre?: VoiceCardTimbre | null
+  active_defaults?: VoiceCardDefaults | null
 }
 
 export type VoiceCardCreateInput = {
@@ -55,6 +69,15 @@ export type VoiceCardCreateInput = {
   notes?: string
   license_id?: string | null
   consent_id?: string | null
+}
+
+/** PATCH /api/voice-cards/{voice_id}：全部字段可选，缺省 = 不修改（backend VoiceCardUpdate）。 */
+export type VoiceCardPatchInput = {
+  display_name?: string
+  status?: 'active' | 'retired'
+  license_id?: string | null
+  consent_id?: string | null
+  active_version?: string
 }
 
 // —— 任务中心 ——
@@ -256,8 +279,12 @@ export type TrainingStatusResponse = {
 export type TrainingMetricRow = {
   step?: number
   step_idx?: number
-  loss_d?: number
-  loss_g?: number
+  /** 引擎上报的全局步数（metrics.jsonl 的 global_step，画曲线的 x 轴）。 */
+  global_step?: number | null
+  epoch?: number
+  stage?: string
+  loss_d?: number | null
+  loss_g?: number | null
 } & Record<string, unknown>
 export type CheckpointRow = { name?: string; step?: number } & Record<string, unknown>
 export type TranscriptRow = { path: string; text: string; audio_url?: string }

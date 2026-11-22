@@ -81,7 +81,12 @@ def training_stats(cfg: dict[str, Any]) -> dict[str, float | int | None]:
     except OSError:
         pass
     try:
-        stats["lines"] = len([line for line in (data / "sliced_corrected.list").read_text(encoding="utf-8").splitlines() if line.strip()])
+        # 2026-11-21 修复：清单在 custom_data/asr/ 子目录（曾漏掉一层导致训练句数永远是 —）
+        stats["lines"] = len([
+            line
+            for line in (data / "asr" / "sliced_corrected.list").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ])
     except OSError:
         pass
     raw_dir = data / "raw"

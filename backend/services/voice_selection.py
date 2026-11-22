@@ -88,7 +88,53 @@ def _resolve_path(value: str, base: Path) -> str:
     return str(candidate)
 
 
+def _resolve_bound_card(config: dict[str, Any]) -> dict[str, Any] | None:
+    """找到引擎配置当前实际生效的声线卡（用于展示名称）。
+
+    优先级：config.voice_card_id 精确引用 > 模型+参考音三元组匹配（配置可能先于
+    卡片引用被改动）。任何失败都返回 None，展示回退「当前音色」。
+    """
+    try:
+        # 延迟导入：voice_assets 也被引擎侧模块引用，避免潜在导入环。
+        from backend.services.voice_assets import VoiceCardStore
+
+        store = VoiceCardStore()
+        voice_id = str(config.get("voice_card_id") or "")
+        if voice_id:
+            try:
+                return store.get(voice_id)
+            except Exception:
+                pass
+        for card in store.list_cards():
+            try:
+                timbre = store.active_version(card["voice_id"]).get("timbre") or {}
+            except Exception:
+                continue
+            if (
+                timbre.get("ref_audio") == config.get("ref_audio")
+                and timbre.get("gpt_model") == config.get("gpt_model")
+                and timbre.get("sovits_model") == config.get("sovits_model")
+            ):
+                return card
+    except Exception:
+        return None
+    return None
+
+
 def _current_profile(config: dict[str, Any]) -> VoiceProfile:
+    bound = _resolve_bound_card(config)
+    if bound is not None:
+        name = str(bound.get("display_name") or "当前音色")
+        return VoiceProfile(
+            id="current",
+            display_name=name,
+            description=f"声线卡「{name}」当前生效的引擎快照。",
+            gpt_model=str(config.get("gpt_model") or ""),
+            sovits_model=str(config.get("sovits_model") or ""),
+            ref_audio=str(config.get("ref_audio") or ""),
+            ref_text=str(config.get("ref_text") or ""),
+            prompt_lang=str(config.get("prompt_lang") or "zh"),
+        )
     return VoiceProfile(
         id="current",
         display_name="当前音色",

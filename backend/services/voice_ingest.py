@@ -26,7 +26,7 @@ import soundfile as sf
 from backend.infra.gpu import GPU_ARBITER
 from backend.services import media_diarization, reference_audio, whisper_cache
 
-MIN_SELECTED_SECONDS = 1.8
+MIN_SELECTED_SECONDS = 3.0  # 引擎要求参考音 ≥3s；选窗下限必须与引擎契约一致
 MAX_SELECTED_SECONDS = 10.0
 TARGET_SELECTED_SECONDS = 6.0
 PREPARED_SAMPLE_RATE = 32000
@@ -148,8 +148,11 @@ def candidate_windows(audio: np.ndarray, rate: int) -> list[tuple[float, float]]
             if merged_end - region.start >= MIN_SELECTED_SECONDS:
                 windows.append((float(region.start), float(merged_end)))
     if not windows and regions:
+        # 兜底候选也必须满足引擎 ≥3s 契约；有效语音不足时宁可让 prepare 明确失败，
+        # 也不能产出一个引擎必然拒绝的参考音（曾出现 2.6s 素材建档后合成必失败）。
         region = max(regions, key=lambda item: item.duration)
-        windows.append((float(region.start), float(min(region.end, region.start + MAX_SELECTED_SECONDS))))
+        if region.duration >= MIN_SELECTED_SECONDS:
+            windows.append((float(region.start), float(min(region.end, region.start + MAX_SELECTED_SECONDS))))
     # A whole-file short prompt and a region candidate can describe the same span.
     unique: list[tuple[float, float]] = []
     for start, end in sorted(windows):
@@ -244,7 +247,7 @@ def prepare_reference_from_audio(
         _report_progress(progress, 0.15, "检测语音")
         windows = rank_candidates(audio, rate, candidate_windows(audio, rate))
         if not windows:
-            raise VoiceIngestError("没有检测到可用语音；请确认录音里有正常说话声。")
+            raise VoiceIngestError("没有检测到可用的参考片段；素材里的有效语音需要 ≥3 秒（引擎契约），请换一段更长的自然说话录音。")
 
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)

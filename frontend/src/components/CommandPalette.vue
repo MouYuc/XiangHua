@@ -19,6 +19,18 @@ const query = ref('')
 
 type Item = { id: string; icon: 'gen' | 'txt' | 'plus' | 'workshop' | 'clock' | 'gear' | 'voice' | 'page'; label: string; hint?: string; run: () => void }
 
+/** mono 类型小标签（D 稿的等宽小注风格）。 */
+const TYPE_LABELS: Record<Item['icon'], string> = {
+  gen: '操作',
+  txt: '操作',
+  plus: '新建',
+  workshop: '工作坊',
+  clock: '记录',
+  gear: '设置',
+  voice: '声音',
+  page: '跳转',
+}
+
 const items = computed<Item[]>(() => {
   const all: Item[] = [
     { id: 'nav-workbench', icon: 'page', label: '打开工作台', run: () => setPage('workbench') },
@@ -121,7 +133,6 @@ function avatarFor(item: Item) {
         :key="item.id"
         class="it"
         :class="{ sel: index === selected }"
-        :style="index === selected ? 'background:var(--surface2)' : ''"
         type="button"
         @mouseenter="selected = index"
         @click="runItem(item)"
@@ -135,9 +146,38 @@ function avatarFor(item: Item) {
         <svg v-else class="ic sm" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" style="fill:currentColor;stroke:none" /></svg>
         {{ item.label }}
         <span v-if="item.hint" class="d">{{ item.hint }}</span>
+        <span class="ty mono">{{ TYPE_LABELS[item.icon] }}</span>
       </button>
       <div v-if="!items.length" class="sec" style="padding:12px 10px;text-transform:none;font-weight:400">没有匹配的结果</div>
     </div>
     <div class="ft"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 执行</span><span><kbd>ESC</kbd> 关闭</span></div>
   </div>
 </template>
+
+<style scoped>
+/* 弹窗遮罩统一：纯色纸墨遮罩，无模糊玻璃（深色主题沿用全局暗遮罩） */
+:global(.overlay) {
+  background: rgba(25, 24, 23, 0.32);
+  backdrop-filter: none;
+}
+
+/* 选中行：--surface2 底 */
+.cmdk .it.sel {
+  background: var(--surface2);
+}
+
+/* mono 类型小标签（右侧对齐） */
+.cmdk .it .ty {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--text3);
+  flex: none;
+}
+.cmdk .it .d {
+  margin-left: 0;
+  font-size: 11px;
+  color: var(--text3);
+}
+</style>

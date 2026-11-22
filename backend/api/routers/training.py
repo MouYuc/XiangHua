@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +20,12 @@ from backend.schemas import (
 )
 from backend.services import (
     core,
+    voice_assets,
 )
 from backend.services.training import (
     ST_DONE,
     apply_patch,
+    clean_stale_prepare_artifacts,
     cmd_asr,
     cmd_feat,
     cmd_slice,
@@ -37,6 +40,7 @@ from backend.services.training import (
     patch_status,
     read_list,
     running_jobs,
+    scan_exp_checkpoints,
     start_deps_job,
     start_job,
     step_status,
@@ -69,7 +73,19 @@ def training_metrics(job_id: str | None = None) -> dict[str, Any]:
 
 @router.get("/training/checkpoints")
 def training_checkpoints() -> dict[str, Any]:
-    return {"rows": list_checkpoint_entries()}
+    """训练产物清单：当前实验在权重目录里的真实文件为准（历史记录文件常为空）。"""
+    rows = list_checkpoint_entries()
+    try:
+        cfg = core.load_config()
+        root = deps._root_or_400(cfg)
+        exp = str(load_train_state().get("exp") or "").strip()
+        if exp:
+            disk_rows = scan_exp_checkpoints(str(root), exp)
+            if disk_rows:
+                rows = disk_rows
+    except HTTPException:
+        pass
+    return {"rows": rows}
 
 @router.post("/training/dependencies")
 def install_dependencies() -> dict[str, Any]:
@@ -152,6 +168,15 @@ def get_transcript() -> dict[str, Any]:
 @router.put("/training/transcript")
 def save_transcript(request: TranscriptUpdate) -> dict[str, Any]:
     root = deps._root_or_400(core.load_config())
+    # 空清单守卫：页面在转写加载完成前点「保存并继续」，会把整个 corrected 清单
+    # 覆盖成 0 行——特征提取会"成功"处理零行数据，训练随后在引擎里除零崩溃。
+    # Whisper 清单有内容时，拒绝把空清单当真实校对结果保存。
+    whisper = deps._transcript_path(root)
+    if not request.rows and whisper.is_file() and whisper.read_text(encoding="utf-8").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="转写还没加载（0 句），不能保存空清单。请刷新页面等「校对转写」出现内容，或点「跳过校对直接继续」。",
+        )
     output = root / "custom_data" / "asr" / "sliced_corrected.list"
     output.parent.mkdir(parents=True, exist_ok=True)
     result = write_corrected(output, request.rows)
@@ -181,7 +206,12 @@ def training_features(request: FeatureRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="请先完成校对或直接使用识别结果。")
     if not patch_status(str(root)):
         raise HTTPException(status_code=400, detail="广普补丁未应用，请先应用补丁。")
-    job_id = start_job("feat", "特征提取", cmd_feat(str(root), experiment))
+    job_id = start_job(
+        "feat",
+        "特征提取",
+        cmd_feat(str(root), experiment),
+        pre=partial(clean_stale_prepare_artifacts, str(root)),
+    )
     return {"job_id": job_id, **deps._job_message("feat", "特征提取已启动（4 个子步）。")}
 
 @router.post("/training/run")
@@ -222,4 +252,30 @@ def select_models() -> dict[str, Any]:
     if not models["gpt"] or not models["sovits"]:
         raise HTTPException(status_code=404, detail="还没找到训练产物，请先完成训练。")
     config.update(gpt_model=models["gpt"], sovits_model=models["sovits"])
-    return {"message": "已填入并保存最新训练模型，可回合成页试音。", "config": core.save_config(config)}
+    # ⑤ 自动建档（2026-11-21 用户拍板改设计）：训练完成后，同名实验卡存在就追加
+    # 版本（版本只增不改），否则以实验名新建声线卡并绑定到引擎配置。建档失败
+    # 只提示不阻塞「启用训练模型」主路。
+    card_message = ""
+    experiment = str(load_train_state().get("exp") or "").strip()
+    if experiment:
+        try:
+            existing = next(
+                (
+                    card
+                    for card in deps.VOICE_CARDS.list_cards()
+                    if card.get("display_name") == experiment and card.get("status") != "unknown"
+                ),
+                None,
+            )
+            if existing:
+                card = deps.VOICE_CARDS.add_version(
+                    existing["voice_id"], config, notes="训练产物自动建档"
+                )
+                card_message = f" 声线卡「{card['display_name']}」已追加版本 v{card['active_version']}。"
+            else:
+                card = deps.VOICE_CARDS.create(config, experiment, notes="训练产物自动建档")
+                card_message = f" 已自动创建声线卡「{card['display_name']}」v{card['active_version']}。"
+            config["voice_card_id"] = card["voice_id"]
+        except voice_assets.VoiceAssetError as exc:
+            card_message = f" （自动建档未成功：{exc}）"
+    return {"message": f"已填入并保存最新训练模型，可回合成页试音。{card_message}", "config": core.save_config(config)}

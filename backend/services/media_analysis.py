@@ -15,6 +15,7 @@ import json
 import shutil
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -173,7 +174,19 @@ class MediaAnalysisMixin:
 
             if transcribe and segments:
                 notify(0.9, "语音转写")
-                self._transcribe(session_id, segments, model=model, language=session.get("language", "zh"))
+
+                def on_segment(done: int) -> None:
+                    # 每段转写完刷新一次进度 → progress 回调里同时检查取消标记，
+                    # 取消请求在下一个片段边界即可生效（此前要等全部转完）。
+                    notify(0.9 + 0.09 * (done / max(len(segments), 1)), "语音转写")
+
+                self._transcribe(
+                    session_id,
+                    segments,
+                    model=model,
+                    language=session.get("language", "zh"),
+                    on_segment=on_segment,
+                )
 
             speaker_rows = [asdict(speaker) for speaker in result.speakers]
             for row in speaker_rows:
@@ -262,6 +275,7 @@ class MediaAnalysisMixin:
         *,
         model: str,
         language: str,
+        on_segment: Callable[[int], None] | None = None,
     ) -> None:
         # Local import: voice_ingest is a sibling service that imports the same
         # diarization/audio helpers. Keeping this import inside the call site
@@ -276,7 +290,11 @@ class MediaAnalysisMixin:
             return
 
         whisper_language = "zh" if language == "yue" else language
-        for segment in segments:
+        for index, segment in enumerate(segments):
+            # 每段转写完都回调一次：调用方借它刷新进度并检查取消标记
+            # （此前整段转写是一个不透明的黑盒，取消点了也要等全部转完才生效）。
+            if on_segment is not None:
+                on_segment(index)
             path = self._absolute(session_id, segment["path"])
             try:
                 raw_text, _info = whisper_cache.transcribe(
@@ -369,6 +387,10 @@ class MediaAnalysisMixin:
         last = {"progress": -1.0, "stage": ""}
 
         def progress(fraction: float, stage: str) -> None:
+            # 协作式取消：每个片段/阶段结束都检查一次取消标记，发现即中止分析。
+            fresh = self.load(session_id)
+            if (fresh.get("job") or {}).get("cancel_requested"):
+                raise MediaIngestError("分析已取消。")
             # A long movie produces thousands of embedding windows. Persisting
             # every one would turn progress reporting into the bottleneck, so
             # only write when the bar moves by 2% or the stage changes.
@@ -400,18 +422,25 @@ class MediaAnalysisMixin:
                 progress=progress,
             )
         except Exception as exc:
-            # Bind the message before the closure: Python unbinds ``exc`` when the
-            # handler exits, and a lambda that reads it later would raise.
+            # 取消请求走的是同一条异常路径；收尾写回被 cancel_requested 守卫拦下，
+            # 线程迟到结果不会把已取消的任务改回 running/ready。
+            fresh_state = self.load(session_id)
+            if (fresh_state.get("job") or {}).get("cancel_requested"):
+                return
+            cancelled = "取消" in str(exc)
+            status = "cancelled" if cancelled else "fail"
+            stage_text = "已取消" if cancelled else "失败"
+            message = "分析已取消。" if cancelled else "分析失败。"
             error_text = str(exc)
             self.patch(
                 session_id,
                 lambda fresh: {
                     **fresh,
                     "job": {
-                        "status": "fail",
-                        "stage": "失败",
+                        "status": status,
+                        "stage": stage_text,
                         "progress": 0.0,
-                        "message": "分析失败。",
+                        "message": message,
                         "error": error_text,
                     },
                 },
@@ -772,6 +801,28 @@ class MediaAnalysisMixin:
         text_ready = all(str(row.get("text") or "").strip() for row in rows)
         if text_ready:
             atomic_write_text(whisper_path, payload)
+        # 清理上一轮激活残留的切片：只保留本次清单引用的文件。切片都是会话目录
+        # 里的副本（原件在各 session 下），旧会话的副本留在训练工作区只会无限
+        # 堆积（一天曾积到 148 个，而当前清单只用其中 9 个）。
+        referenced = {f"media_{session_id}_{row['segment_id']}.wav" for row in rows}
+        removed_slices = 0
+        for stale in sliced_dir.glob("*.wav"):
+            if stale.name not in referenced:
+                try:
+                    stale.unlink()
+                    removed_slices += 1
+                except OSError:
+                    pass
+        # 列表备份也只保留最近 3 份，避免 asr 目录无限膨胀
+        for pattern in ("sliced_corrected.list.bak-*", "sliced_whisper.list.bak-*"):
+            backups = sorted(
+                asr_dir.glob(pattern), key=lambda item: item.stat().st_mtime, reverse=True
+            )
+            for old_backup in backups[3:]:
+                try:
+                    old_backup.unlink()
+                except OSError:
+                    pass
         return {
             "copied": len(rows),
             "rejected": int(rejected),
@@ -783,6 +834,7 @@ class MediaAnalysisMixin:
             "speaker_id": speaker_id,
             "dataset_id": dataset_id,
             "run_id": run_id,
+            "cleaned_slices": removed_slices,
         }
 
 

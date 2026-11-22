@@ -20,6 +20,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -498,8 +499,61 @@ def running_jobs():
     return out
 
 
+def scan_exp_checkpoints(root: str, exp: str) -> list[dict]:
+    """扫描当前实验在权重目录里的训练产物（s1 ckpt + s2 pth）。
+
+    历史上检查点记录（train_checkpoints.json）依赖阶段切换写入，多数训练根本
+    不会产生条目，UI 一直显示 0。真实产物就在 GPT_weights_v2Pro /
+    SoVITS_weights_v2Pro 下按实验名命名，直接按文件系统为准。
+    """
+    rows: list[dict] = []
+    base = Path(root)
+    if not exp or not base.is_dir():
+        return rows
+    specs = [
+        (base / "GPT_weights_v2Pro", f"{exp}-e*.ckpt", "s1"),
+        (base / "SoVITS_weights_v2Pro", f"{exp}_e*_s*.pth", "s2"),
+    ]
+    for directory, pattern, kind in specs:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob(pattern), key=lambda item: item.stat().st_mtime):
+            try:
+                stat = path.stat()
+                rows.append({
+                    "job_id": "disk",
+                    "name": path.name,
+                    "kind": kind,
+                    "size_bytes": stat.st_size,
+                    "saved_at": datetime.fromtimestamp(stat.st_mtime).strftime("%m-%d %H:%M"),
+                    "path": str(path),
+                })
+            except OSError:
+                continue
+    return rows
+
+
 def last_job_id():
-    return _LAST_JOB_ID["id"]
+    """最近一次训练任务 id：优先内存记录；重启后按 train_runs 目录回溯。
+
+    ``_LAST_JOB_ID`` 是进程内变量，后端一重启就丢——而前端靠它拉取 loss 曲线
+    与检查点（/api/training/metrics?job_id=…）。训练任务的 run 目录名就是
+    job id（``TRAIN_RUNS_DIR/<job_id>/metrics.jsonl``），按修改时间取最新即可
+    跨重启找回，曲线不再消失。
+    """
+    if _LAST_JOB_ID.get("id"):
+        return _LAST_JOB_ID["id"]
+    try:
+        candidates = [
+            entry
+            for entry in TRAIN_RUNS_DIR.iterdir()
+            if entry.is_dir() and entry.name.startswith("train_")
+        ]
+    except OSError:
+        return ""
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda entry: entry.stat().st_mtime).name
 
 
 def job_log_path(job_id):
@@ -648,6 +702,39 @@ def _child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     if extra:
         env.update(extra)
     return env
+
+
+def clean_stale_prepare_artifacts(root: str) -> None:
+    """清空上一轮特征提取的派生产物（opt_dir = custom_data/dataset）。
+
+    GPT-SoVITS 的 prepare 脚本按「产物已存在就整步跳过」工作
+    （``1-get-text.py`` 只看 ``2-name2text-<part>.txt`` 是否存在）。换数据集重建
+    特征时，旧数据集的 name2text / name2semantic / 特征目录残留会让新素材被
+    整步跳过，text/semantic 与当前切片错配，训练直接在旧数据上跑。
+    特征提取本来就幂等且便宜（~50 秒量级），先清空保证四步全部重算。
+    """
+    dataset = Path(root) / "custom_data" / "dataset"
+    if not dataset.is_dir():
+        return
+    for pattern in ("2-name2text*.txt", "6-name2semantic*.tsv"):
+        for path in dataset.glob(pattern):
+            path.unlink(missing_ok=True)
+    for sub in ("3-bert", "4-cnhubert", "5-wav32k", "7-sv_cn"):
+        target = dataset / sub
+        if not target.is_dir():
+            continue
+        for child in target.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+    # 训练中间产物同样按「产物已存在就跳过」逻辑残留：logs_s1/ckpt 里堆着所有
+    # 旧实验的检查点（曾让新实验自动继承旧进度并触发 torch2.6 崩溃）、
+    # logs_s2 里堆着 G/D 权重对。最终产物已复制到权重目录，这里整目录清空。
+    for sub in ("logs_s1_v2Pro", "logs_s2_v2Pro"):
+        target = dataset / sub
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
 
 
 def cmd_feat(root, exp, corrected_rel="custom_data/asr/sliced_corrected.list"):

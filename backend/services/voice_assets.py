@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -359,6 +360,18 @@ class VoiceCardStore:
             card["active_version"] = active_version
         card["updated_at"] = _now_iso()
         _atomic_write_json(self._card_path(voice_id), card)
+        return card
+
+    def delete(self, voice_id: str) -> dict[str, Any]:
+        """永久删除声线卡（整个卡片目录，含版本历史快照）。
+
+        参考音频文件本身在 ``.guangpu_webui/reference_audio/prepared``，与卡目录
+        分离，其他卡与「当前音色」不受影响。调用方（路由层）负责挡住正在用于
+        合成的卡。
+        """
+        card = self._load(voice_id)
+        card_dir = self._card_path(voice_id).parent
+        shutil.rmtree(card_dir, ignore_errors=True)
         return card
 
     # ------------------------------------------------------------- applying

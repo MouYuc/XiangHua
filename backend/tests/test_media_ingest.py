@@ -82,6 +82,42 @@ class SessionStorageTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["session_id"], session["session_id"])
 
+    def test_activate_removes_slices_of_previous_activation(self) -> None:
+        """重新激活新素材后，上一轮留在训练工作区的切片副本必须清掉。
+
+        曾经一天堆积 148 个历史切片（当前清单只用 9 个），doctor 的
+        「训练句数/切片数」也被撑得失去意义。
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            service = media_ingest.MediaIngestService(raw)
+            session = service.create_session("测试", rights_declared=True)
+            session_id = session["session_id"]
+            seg_dir = Path(raw) / "custom_data" / "media" / session_id / "segments" / "run1"
+            seg_dir.mkdir(parents=True, exist_ok=True)
+
+            def write_segment(name: str) -> dict:
+                (seg_dir / f"{name}.wav").write_bytes(wav_bytes(two_speaker_audio()).read())
+                return {"segment_id": name, "path": f"segments/run1/{name}.wav", "text": "一句。"}
+
+            rows_first = [write_segment("seg_a"), write_segment("seg_b")]
+            service._write_training_workspace(
+                session, rows_first, speaker_id="spk", language="zh",
+                rejected=0, dataset_id="", run_id="",
+            )
+            sliced = Path(raw) / "custom_data" / "sliced"
+            self.assertEqual(len(list(sliced.glob("*.wav"))), 2)
+
+            rows_second = [write_segment("seg_c")]
+            service._write_training_workspace(
+                session, rows_second, speaker_id="spk", language="zh",
+                rejected=0, dataset_id="", run_id="",
+            )
+            names = [p.name for p in sliced.glob("*.wav")]
+            self.assertEqual(names, [f"media_{session_id}_seg_c.wav"])
+            # 列表备份只保留最近 3 份
+            self.assertLessEqual(len(list((Path(raw) / "custom_data" / "asr").glob("*.bak-*"))), 6)
+
+
     def test_rights_are_required(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             service = media_ingest.MediaIngestService(raw)

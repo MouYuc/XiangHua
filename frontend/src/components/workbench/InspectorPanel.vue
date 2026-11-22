@@ -1,46 +1,68 @@
 <script setup lang="ts">
 /**
- * 工作台右侧「声音检查器」：参考音状态、语言/口音档位、参数预设与生成按钮。
+ * 工作台右侧「检查器」（设计稿 D：单屏极简 · 浅色纸面）。
  *
- * 从 WorkbenchView.vue 原样抽出（布局、样式值与文案不变）。全局单例
- * composables（useConfig / useVoices / useReferenceAudio / useSynthesis /
- * usePage）在这里直接复用，与主视图共享同一份状态；台词画布侧的编排
- * （台词行状态、待生成句数、generate 入口）通过 props / emit 传入。
+ * 五段结构：声音卡 / 语言 / 广普程度 / 参数预设 / 高级参数。
+ * 全局单例 composables（useConfig / useVoices / useReferenceAudio / usePage）
+ * 在这里直接复用，与主视图共享同一份状态；高级参数是 mono 数值输入
+ * （右对齐、无边框、focus 时 1px 底线），改动仍走 useConfig 的 650ms
+ * 防抖自动保存。移动端（≤900px）整体收进浮层，close 事件由主视图接。
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ACCENT_OPTIONS, LANGUAGE_OPTIONS, useConfig } from '@/composables/useConfig'
 import { usePage } from '@/composables/usePage'
 import { useReferenceAudio } from '@/composables/useReferenceAudio'
-import { useSynthesis } from '@/composables/useSynthesis'
 import { useVoices } from '@/composables/useVoices'
 
 defineOptions({ name: 'InspectorPanel' })
 
-const props = defineProps<{
-  /** 待生成句数（空行/注释行除外，由台词画布统计）。 */
-  pendingCount: number
-  /** 有效台词总句数（同上，由台词画布统计）。 */
-  speechCount: number
-}>()
+const emit = defineEmits<{ close: [] }>()
 
-const emit = defineEmits<{ generate: [] }>()
-
-const { config } = useConfig()
+const { config, saving, savedAt } = useConfig()
 const { setPage } = usePage()
 const voices = useVoices()
-const synthesis = useSynthesis()
 const reference = useReferenceAudio()
 
 const currentProfile = computed(() => voices.profileById(config.voice_profile_id || 'current'))
-const voiceName = computed(() => voices.displayName(currentProfile.value))
-const voiceAvatar = computed(() => voices.avatarText(voiceName.value))
+const currentCard = computed(
+  () => voices.cards.value.find((item) => item.voice_id === config.voice_profile_id) ?? null,
+)
+const voiceName = computed(
+  () => currentCard.value?.display_name || voices.displayName(currentProfile.value),
+)
 const refOk = computed(() => Boolean(config.ref_audio?.trim()))
+const refBasename = computed(() => (config.ref_audio || '').split(/[\\/]/).pop() || '未配置')
+const pairMismatch = computed(() => reference.pair.value?.status === 'mismatched')
 
-// 后端没有 "自动" 档位（text_lang 恒为具体语种），所以这里只列出真实可选值。
-const LANG_SEG = LANGUAGE_OPTIONS.map((item) => ({ key: item.value, label: item.label }))
-const activeLang = computed(() => config.prompt_lang)
+const saveHint = computed(() => {
+  if (saving.value) return '保存中…'
+  if (savedAt.value) return '已自动保存'
+  return ''
+})
+
+// —— 语言：「自动」只是显示态（后端 prompt_lang 恒为具体语种，自动即默认 zh），
+// 行内 <zh>/<en>/<yue>/<ja>/<ko> 标记始终优先。 ——
+const LANG_SEG = [{ key: 'auto', label: '自动' }, ...LANGUAGE_OPTIONS.map((item) => ({ key: item.value, label: item.label }))]
+const autoLang = ref(true)
+// 分区说明折叠：标题右侧 ⓘ，点开才显示小字说明（语言 / 广普程度）。
+const infoOpen = ref<{ lang: boolean; accent: boolean }>({ lang: false, accent: false })
+
+// 点空白处关闭说明气泡：点在 ⓘ 或气泡内不关（气泡内文字可选）。
+function onDocumentClick(event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.info-btn') || target?.closest('.info-pop')) return
+  infoOpen.value = { lang: false, accent: false }
+}
+onMounted(() => document.addEventListener('click', onDocumentClick))
+onUnmounted(() => document.removeEventListener('click', onDocumentClick))
+const activeLangKey = computed(() => (autoLang.value ? 'auto' : config.prompt_lang))
 function setLang(key: string) {
-  config.prompt_lang = (key === 'auto' ? 'zh' : key) as typeof config.prompt_lang
+  if (key === 'auto') {
+    autoLang.value = true
+    return
+  }
+  autoLang.value = false
+  config.prompt_lang = key as typeof config.prompt_lang
 }
 
 const ACCENT_SEG = ACCENT_OPTIONS.map((item) => ({ key: item.value, label: item.value === 'off' ? '关' : item.label }))
@@ -71,25 +93,23 @@ function applyPreset(key: PresetKey) {
   Object.assign(config, PRESETS[key].values)
 }
 
-const advOpen = ref(false)
-
+// —— 高级参数：mono 数值输入，提交（change/blur/Enter）时夹紧到合法区间，
+// 落到 config 后由 useConfig 的 650ms 防抖自动保存。 ——
 const PARAM_ROWS = computed(() => ([
-  { key: 'speed', label: '语速', min: 0.5, max: 3, step: 0.05, fmt: (v: number) => `${v.toFixed(2)}×` },
-  { key: 'pause_second', label: '句间停顿', min: 0, max: 2, step: 0.05, fmt: (v: number) => `${v.toFixed(2)}s` },
-  { key: 'temperature', label: '温度', min: 0.05, max: 2, step: 0.05, fmt: (v: number) => v.toFixed(2) },
-  { key: 'sample_steps', label: '采样步数', min: 8, max: 128, step: 1, fmt: (v: number) => String(v) },
-  { key: 'top_p', label: 'top_p', min: 0.05, max: 1, step: 0.01, fmt: (v: number) => v.toFixed(2) },
+  { key: 'speed', label: '语速', min: 0.5, max: 3, step: 0.05 },
+  { key: 'pause_second', label: '句间停顿', min: 0, max: 2, step: 0.05 },
+  { key: 'temperature', label: '采样温度', min: 0.05, max: 2, step: 0.05 },
+  { key: 'sample_steps', label: '采样步数', min: 8, max: 128, step: 1 },
+  { key: 'top_p', label: 'top_p', min: 0.05, max: 1, step: 0.01 },
 ] as const))
-
-function paramPercent(row: (typeof PARAM_ROWS.value)[number]) {
-  const value = Number(config[row.key as keyof typeof config]) || row.min
-  return Math.round(((value - row.min) / (row.max - row.min)) * 100)
-}
 
 function setParam(row: (typeof PARAM_ROWS.value)[number], event: Event) {
   const target = event.target as HTMLInputElement
   const value = Number(target.value)
-  Object.assign(config, { [row.key]: value })
+  if (!Number.isFinite(value)) return
+  const clamped = Math.min(row.max, Math.max(row.min, value))
+  Object.assign(config, { [row.key]: clamped })
+  target.value = String(clamped)
 }
 
 function resetParams() {
@@ -98,118 +118,173 @@ function resetParams() {
 </script>
 
 <template>
-  <aside class="inspector">
-    <div class="ins-pad">
-      <div class="ins-sec">
-        <div class="h">声音<button class="btn-ghost" style="height:20px;font-size:11px" type="button" @click="setPage('voices')">管理 →</button></div>
-        <button class="voice-pick" type="button" @click="setPage('voices')">
-          <span class="v-avatar">{{ voiceAvatar }}</span>
-          <span class="t">
-            <b>{{ voiceName }}</b>
-            <span v-if="refOk">参考音已配对 · {{ config.ref_audio.split(/[\\/]/).pop() }}</span>
-            <span v-else style="color:var(--warn)">未配置参考音 · 去声音库建档</span>
-          </span>
-          <svg class="ic sm" viewBox="0 0 24 24" style="color:var(--text3)"><path d="M6 9l6 6 6-6" /></svg>
+  <aside class="ins">
+    <div class="ins-head">
+      <b>检查器</b>
+      <span class="r mono">{{ saveHint }}</span>
+      <button class="ins-close" type="button" aria-label="收起参数" @click="emit('close')">✕</button>
+    </div>
+
+    <!-- 声音卡 -->
+    <div class="ins-sec">
+      <span class="lbl">声音卡</span>
+      <div class="kv-row">
+        <b class="ins-name">{{ voiceName }}</b>
+        <span class="tag" :class="refOk ? 'tag-ink' : 'warn'">{{ refOk ? '可用' : '未配参考音' }}</span>
+        <span v-if="currentCard" class="v">{{ currentCard.active_version }} · {{ currentCard.version_count }} 版</span>
+      </div>
+      <div class="kv-row"><span class="k">参考音</span><span class="v" :title="config.ref_audio">{{ refOk ? refBasename : '未配置 · 去声音库建档' }}</span></div>
+      <div v-if="pairMismatch" class="pair-note">参考音与参考文本不匹配：{{ reference.pair.value?.message }}</div>
+      <button class="alink" type="button" @click="setPage('voices')">在声音库中查看 →</button>
+    </div>
+
+    <!-- 语言 -->
+    <div class="ins-sec">
+      <div class="sec-head">
+        <span class="lbl">语言</span>
+        <button class="info-btn" :class="{ on: infoOpen.lang }" type="button" title="说明" aria-label="语言说明" @click="infoOpen.lang = !infoOpen.lang">
+          <svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 10.6v5.6" /><path d="M12 7.6h.01" /></svg>
         </button>
-        <div v-if="reference.pair.value && reference.pair.value.status === 'mismatched'" class="note" style="margin-top:7px">
-          参考音与参考文本不匹配：{{ reference.pair.value.message }}
-        </div>
+        <div v-if="infoOpen.lang" class="info-pop">行内 &lt;zh&gt; / &lt;en&gt; / &lt;yue&gt; / &lt;ja&gt; / &lt;ko&gt; 标记优先；台词区输入 &lt; 会自动弹出语种标签菜单。</div>
       </div>
-
-      <div class="ins-sec">
-        <div class="h">语言</div>
-        <div class="seg">
-          <button v-for="item in LANG_SEG" :key="item.key" type="button" :class="{ on: activeLang === item.key }" @click="setLang(item.key)">{{ item.label }}</button>
-        </div>
-      </div>
-
-      <div class="ins-sec">
-        <div class="h">广普程度</div>
-        <div class="seg">
-          <button v-for="item in ACCENT_SEG" :key="item.key" type="button" :class="{ on: config.accent_level === item.key }" @click="config.accent_level = item.key as typeof config.accent_level">{{ item.label }}</button>
-        </div>
-        <p class="ins-hint">只影响读音，不动音色；「目的」「的确」等固定搭配始终受保护。</p>
-      </div>
-
-      <div class="ins-sec">
-        <div class="h">参数预设</div>
-        <div style="display:flex;flex-direction:column;gap:6px">
-          <button v-for="(preset, key) in PRESETS" :key="key" class="radio-row" :class="{ on: activePreset === key }" type="button" @click="applyPreset(key)">
-            <span class="dot2"></span>
-            <span><b>{{ preset.label }}</b><span class="d">{{ preset.desc }}</span></span>
-          </button>
-        </div>
-      </div>
-
-      <div class="disc" :class="{ open: advOpen }">
-        <button class="hd" type="button" @click="advOpen = !advOpen">
-          <svg class="ic sm chev" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6" /></svg>高级参数
-        </button>
-        <div v-show="advOpen" class="bd">
-          <div v-for="row in PARAM_ROWS" :key="row.key" class="param">
-            <span class="k">{{ row.label }}</span>
-            <input class="range" type="range" :min="row.min" :max="row.max" :step="row.step" :value="Number(config[row.key as keyof typeof config])" @input="setParam(row, $event)">
-            <span class="v">{{ row.fmt(Number(config[row.key as keyof typeof config])) }}</span>
-          </div>
-          <div style="display:flex;gap:6px;margin-top:8px">
-            <button class="mini" type="button" @click="resetParams">恢复默认</button>
-            <span class="ins-hint" style="align-self:center">改动自动保存，仅对本项目生效</span>
-          </div>
-        </div>
+      <div class="seg">
+        <button v-for="item in LANG_SEG" :key="item.key" type="button" :class="{ on: activeLangKey === item.key }" @click="setLang(item.key)">{{ item.label }}</button>
       </div>
     </div>
 
-    <div class="ins-gen">
-      <div v-if="synthesis.readiness.value.status === 'warming'" class="ins-note warn">
-        引擎预热中，生成会稍等片刻…
+    <!-- 广普程度 -->
+    <div class="ins-sec">
+      <div class="sec-head">
+        <span class="lbl">广普程度</span>
+        <button class="info-btn" :class="{ on: infoOpen.accent }" type="button" title="说明" aria-label="广普程度说明" @click="infoOpen.accent = !infoOpen.accent">
+          <svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 10.6v5.6" /><path d="M12 7.6h.01" /></svg>
+        </button>
+        <div v-if="infoOpen.accent" class="info-pop">只影响读音，不动音色；「目的」「的确」等固定搭配始终受保护。句子里需含触发词（是/的/没有/什么等）才会产生替换。</div>
       </div>
-      <div v-else-if="synthesis.readiness.value.status === 'failed'" class="ins-note err">
-        引擎未就绪：{{ synthesis.readiness.value.error || synthesis.readiness.value.message }}
-        <button class="mini" style="height:22px;margin-left:6px" type="button" @click="synthesis.retryWarmup()">重试预热</button>
+      <div class="seg">
+        <button v-for="item in ACCENT_SEG" :key="item.key" type="button" :class="{ on: config.accent_level === item.key }" @click="config.accent_level = item.key as typeof config.accent_level">{{ item.label }}</button>
       </div>
-      <button class="btn-primary" style="width:100%" :disabled="synthesis.busy.value" @click="emit('generate')">
-        <svg class="ic sm" viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5.5v13l11-6.5z" /></svg>
-        {{ synthesis.busy.value ? '生成中…' : `生成 ${pendingCount || speechCount} 句` }}
+    </div>
+
+    <!-- 参数预设 -->
+    <div class="ins-sec">
+      <span class="lbl">参数预设</span>
+      <button v-for="(preset, key) in PRESETS" :key="key" class="orow" :class="{ on: activePreset === key }" type="button" @click="applyPreset(key)">
+        <span class="dot"></span>
+        <span class="ot"><b>{{ preset.label }}</b></span>
+        <span class="d">{{ preset.desc }}</span>
       </button>
-      <p class="ins-gen-hint">
-        已完成 {{ synthesis.outputs.value.filter((item) => !item.error).length }} 句 · 显卡{{ synthesis.busy.value ? '占用中' : '空闲' }}
-      </p>
+    </div>
+
+    <!-- 高级参数：滑杆 + 上下限可见（直接可调，拖动即改，650ms 防抖保存） -->
+    <div class="ins-sec">
+      <span class="lbl">高级参数 <span class="tag mut">拖动滑杆或输入数值</span></span>
+      <div v-for="row in PARAM_ROWS" :key="row.key" class="adv-row" :title="`${row.label}：${row.min} – ${row.max}`">
+        <div class="adv-top">
+          <span class="k">{{ row.label }}</span>
+          <input
+            class="num"
+            type="number"
+            :min="row.min"
+            :max="row.max"
+            :step="row.step"
+            :value="Number(config[row.key as keyof typeof config])"
+            @change="setParam(row, $event)"
+          >
+        </div>
+        <div class="adv-slider">
+          <span class="bound">{{ row.min }}</span>
+          <input
+            class="range"
+            type="range"
+            :min="row.min"
+            :max="row.max"
+            :step="row.step"
+            :value="Number(config[row.key as keyof typeof config])"
+            :aria-label="`${row.label}（${row.min} – ${row.max}）`"
+            @input="setParam(row, $event)"
+          >
+          <span class="bound">{{ row.max }}</span>
+        </div>
+      </div>
+      <div class="kv-row"><span class="k">读回选句</span><span class="v">引擎自动</span></div>
+      <div class="adv-foot">
+        <button class="alink" type="button" @click="resetParams">恢复默认（清晰优先）</button>
+      </div>
+      <p class="ins-note">改动自动保存 · 仅对本项目生效</p>
     </div>
   </aside>
 </template>
 
 <style scoped>
-.inspector{display:flex;flex-direction:column;position:sticky;top:48px;height:calc(100vh - 48px);overflow:auto}
-.ins-pad{padding:16px;display:flex;flex-direction:column;gap:14px;flex:1}
-.ins-sec .h{font-size:10.5px;font-weight:600;color:var(--text3);letter-spacing:.5px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between}
-.voice-pick{display:flex;align-items:center;gap:9px;width:100%;padding:9px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);text-align:left}
-.voice-pick:hover{border-color:var(--border2);background:var(--surface2)}
-.voice-pick .t{flex:1;min-width:0}
-.voice-pick .t b{display:block;font-size:12.5px;font-weight:550}
-.voice-pick .t span{font-size:11px;color:var(--text3);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ins-hint{font-size:11px;color:var(--text3);margin-top:6px;line-height:1.6}
-.disc{border-top:1px solid var(--border);padding-top:10px}
-.disc .hd{display:flex;align-items:center;gap:5px;width:100%;font-size:11.5px;color:var(--text2)}
-.disc .hd:hover{color:var(--text)}
-.disc .hd .chev{margin-left:auto;transition:.15s}
-.disc.open .hd .chev{transform:rotate(90deg)}
-.disc .bd{padding-top:8px}
-.param{display:flex;align-items:center;gap:9px;padding:4px 0}
-.param .k{font-size:11.5px;color:var(--text2);width:60px;flex:none}
-.param .v{font:11px var(--mono);color:var(--text);width:42px;text-align:right;flex:none}
-.range{flex:1;appearance:none;height:3px;border-radius:2px;background:var(--surface3);outline:none}
-.range::-webkit-slider-thumb{appearance:none;width:11px;height:11px;border-radius:50%;background:var(--surface);border:1.5px solid var(--text2);cursor:pointer}
-.range::-moz-range-thumb{width:11px;height:11px;border-radius:50%;background:var(--surface);border:1.5px solid var(--text2);cursor:pointer}
-.ins-gen{border-top:1px solid var(--border);padding:12px 16px;background:var(--bg)}
-.ins-note{font-size:11.5px;border-radius:6px;padding:7px 9px;margin-bottom:8px;border:1px solid}
-.ins-note.warn{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-bd)}
-.ins-note.err{color:var(--err);background:var(--err-bg);border-color:var(--err-bd)}
-.ins-gen-hint{font-size:10.5px;color:var(--text3);margin-top:7px;text-align:center}
+/* 链接式次级操作（D .alink） */
+.alink{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--text2);border-bottom:1px solid transparent;padding:1px 0;cursor:pointer}
+.alink:hover{color:var(--text);border-bottom-color:var(--text)}
 
-@media (max-width:1120px){
-  .inspector{position:static;height:auto;border-top:1px solid var(--border)}
+.ins{border-left:1px solid var(--border);padding:22px 4px 48px 32px}
+.ins-head{display:flex;align-items:baseline;gap:10px;padding-bottom:12px}
+.ins-head b{font-size:14px;font-weight:600}
+.ins-head .r{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--text3)}
+.ins-close{display:none;width:26px;height:26px;place-items:center;color:var(--text3);border:1px solid var(--border);border-radius:var(--r);flex:none;align-self:center}
+.ins-close:hover{color:var(--text);border-color:var(--border2)}
+
+.ins-sec{border-top:1px solid var(--border);padding:14px 0}
+.ins-sec .lbl{display:block;padding-bottom:10px}
+.sec-head{display:flex;align-items:center;padding-bottom:10px;position:relative}
+.sec-head .lbl{flex:1;padding-bottom:0}
+.info-btn{width:22px;height:22px;display:grid;place-items:center;color:var(--text3);border:none;background:none;border-radius:var(--rs);cursor:pointer;padding:0}
+.info-btn:hover{color:var(--text);background:var(--surface2)}
+.info-btn.on{color:var(--text)}
+.info-btn .ic{width:14px;height:14px}
+/* ⓘ 悬浮说明气泡：绝对定位，不挤压布局 */
+.info-pop{
+  position:absolute;top:calc(100% + 2px);right:0;z-index:50;width:max-content;max-width:250px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  box-shadow:var(--pop-shadow);padding:8px 10px;text-align:left;
+  font-size:11.5px;line-height:1.6;color:var(--text2);
 }
-@media (max-width:700px){
-  .inspector{padding:0}
+.ins-name{font-size:13px;color:var(--text);font-weight:600}
+.kv-row{display:flex;align-items:center;gap:10px;padding:3px 0;font-size:12.5px;color:var(--text2)}
+.kv-row .k{font-family:var(--mono);font-size:11px;color:var(--text3);flex:none}
+.kv-row .v{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--text);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:168px}
+.tag-ink{border-color:var(--text2);color:var(--text);background:transparent}
+.pair-note{font-size:11.5px;color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn-bd);border-radius:var(--r);padding:6px 8px;margin:6px 0;line-height:1.6}
+.ins-note{font-family:var(--mono);font-size:10.5px;color:var(--text3);padding-top:8px;line-height:1.6}
+
+/* 参数预设（D .opt：无边框单选行） */
+.orow{display:flex;align-items:baseline;gap:9px;padding:5px 0;font-size:12.5px;width:100%;text-align:left;cursor:pointer}
+.orow .dot{width:10px;height:10px;border:1px solid var(--border2);border-radius:50%;flex:none;position:relative;top:2px;background:var(--surface)}
+.orow.on .dot{border-color:var(--text)}
+.orow.on .dot::after{content:"";position:absolute;inset:2px;background:var(--text);border-radius:50%}
+.orow .ot b{font-weight:600;color:var(--text)}
+.orow:not(.on) .ot b{font-weight:400;color:var(--text2)}
+.orow .d{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--text3);text-align:right}
+
+/* 高级参数：滑杆行（上=label+数值输入，下=min 滑杆 max） */
+.adv-row{padding:5px 0 7px}
+.adv-top{display:flex;align-items:center;gap:10px}
+.adv-top .k{font-family:var(--mono);font-size:11px;color:var(--text3);flex:none}
+.adv-slider{display:flex;align-items:center;gap:7px;margin-top:3px}
+.adv-slider .bound{font-family:var(--mono);font-size:9.5px;color:var(--text3);flex:none;min-width:16px}
+.adv-slider .bound:last-child{text-align:right}
+.range{flex:1;appearance:none;-webkit-appearance:none;height:3px;background:var(--surface3);border:1px solid var(--border);border-radius:1px;outline:none;cursor:pointer;padding:0}
+.range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:11px;height:11px;background:var(--text);border:none;border-radius:2px;cursor:pointer}
+.range::-moz-range-thumb{width:11px;height:11px;background:var(--text);border:none;border-radius:2px;cursor:pointer}
+.range:focus-visible{outline:2px solid var(--text2);outline-offset:2px}
+
+/* 高级参数：mono 数值输入（右对齐、无边框、focus 1px 底线） */
+.num{
+  margin-left:auto;width:76px;flex:none;text-align:right;font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;
+  color:var(--text);background:none;border:none;border-bottom:1px solid transparent;border-radius:0;outline:none;padding:1px 0;
+}
+.num:focus-visible{outline:none;border-radius:0}
+.num:focus{border-bottom-color:var(--text2)}
+.num::-webkit-inner-spin-button,.num::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.num{-moz-appearance:textfield;appearance:textfield}
+.adv-foot{padding-top:8px}
+
+@media (max-width:900px){
+  .ins{border-left:none;padding:14px 16px 32px;height:100%}
+  .ins-close{display:grid}
 }
 </style>

@@ -181,6 +181,24 @@ def update_voice_card(voice_id: str, request: VoiceCardUpdate) -> dict[str, Any]
         "card": voice_assets.card_public_dict(card),
     }
 
+@router.delete("/voice-cards/{voice_id}")
+def delete_voice_card(voice_id: str) -> dict[str, Any]:
+    """永久删除一张声线卡；正在用于合成的卡必须先切换才能删。"""
+    config = core.load_config()
+    if config.get("voice_card_id") == voice_id:
+        raise HTTPException(
+            status_code=400,
+            detail="这张卡正在用于合成；先「用于合成」其他声音，再删除它。",
+        )
+    try:
+        card = deps.VOICE_CARDS.delete(voice_id)
+    except voice_assets.VoiceAssetError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    return {
+        "message": f"已删除声线卡「{card['display_name']}」。参考音文件与其他卡不受影响。",
+        "voice_id": voice_id,
+    }
+
 @router.post("/voice-cards/{voice_id}/versions")
 def add_voice_card_version(
     voice_id: str, request: VoiceCardVersionCreate

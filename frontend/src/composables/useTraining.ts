@@ -49,6 +49,7 @@ const sliceDefaults = { silence_threshold: -35, min_length: 4000, min_gap: 300, 
 const slice = reactive({ ...sliceDefaults })
 const whisperModel = ref('large-v3')
 const transcript = ref<TranscriptRow[]>([])
+const transcriptLoaded = ref(false)
 const experiment = ref('myvoice')
 const epochs = reactive({ s1_epochs: 15, s2_epochs: 12 })
 const activeStep = ref('slice')
@@ -121,9 +122,10 @@ const latestMetric = computed(() => metricRows.value.at(-1) || {})
 const lossSeries = computed(() =>
   metricRows.value
     .map((row) => ({
-      step: Number(row.step || row.step_idx || 0),
-      loss_d: Number(row.loss_d || 0),
-      loss_g: Number(row.loss_g || 0),
+      // 引擎上报的全局步数才是 x 轴（曾误读不存在的 step 字段导致所有点挤在 x=0，图是空的）
+      step: Number(row.global_step ?? row.step ?? 0),
+      loss_d: Number(row.loss_d ?? 0),
+      loss_g: Number(row.loss_g ?? 0),
     }))
     .filter((row) => Number.isFinite(row.step) && (row.loss_d > 0 || row.loss_g > 0)),
 )
@@ -252,14 +254,30 @@ async function loadTranscript() {
   try {
     transcript.value =
       (await api.get<{ rows?: TranscriptRow[] }>('/api/training/transcript')).rows || []
+    transcriptLoaded.value = true
     toast.success(`已加载 ${transcript.value.length} 句。`)
   } catch (error) {
     toast.error(error instanceof Error ? error.message : String(error))
   }
 }
 
-async function saveTranscript() {
-  await runAction('/api/training/transcript', { rows: transcript.value })
+async function saveTranscript(silent = false) {
+  // 后端 /api/training/transcript 是 PUT（POST 会 405），不能走 runAction 的 post。
+  if (!transcriptLoaded.value) {
+    if (!silent) toast.error('转写还没加载，先点「重新加载」或「跳过校对直接继续」。')
+    return
+  }
+  actionBusy.value = true
+  try {
+    const result = await api.put<JobResult>('/api/training/transcript', { rows: transcript.value })
+    if (!silent && result.message) toast.success(result.message)
+    if (result.log?.text) logText.value = result.log.text
+    await refresh()
+  } catch (error) {
+    toast.error(errorMessage(error))
+  } finally {
+    actionBusy.value = false
+  }
 }
 
 async function selectModels() {
@@ -334,6 +352,7 @@ export function useTraining() {
     sliceDefaults,
     whisperModel,
     transcript,
+    transcriptLoaded,
     experiment,
     epochs,
     activeStep,

@@ -16,6 +16,7 @@ from backend.schemas import (
 )
 from backend.services.training import (
     ST_DONE,
+    ST_PENDING,
     mark_step,
 )
 
@@ -24,7 +25,7 @@ router = APIRouter()
 
 @router.post("/media/sessions")
 def create_media_session(
-    recording: UploadFile = File(...),
+    recording: list[UploadFile] = File(...),
     name: str = Form(""),
     language: str = Form("zh"),
     rights_declared: bool = Form(False),
@@ -33,9 +34,19 @@ def create_media_session(
     speaker_count: int | None = Form(default=None),
 ) -> dict[str, Any]:
     service = deps._media_service()
-    filename = deps._upload_filename(recording, "media")
+    files = [
+        (deps._upload_filename(item, "media"), item.file)
+        for item in recording
+        if item is not None and item.filename
+    ]
+    if not files:
+        raise HTTPException(status_code=400, detail="没有收到任何媒体文件。")
+    first_name = files[0][0]
+    session_name = name or Path(first_name).stem
+    if len(files) > 1:
+        session_name = f"{Path(first_name).stem} 等 {len(files)} 个文件"
     session = service.create_session(
-        name or Path(filename).stem,
+        session_name,
         language=language,
         rights_declared=rights_declared,
         rights_note=rights_note,
@@ -43,18 +54,21 @@ def create_media_session(
     # Transcoding runs on a worker thread and chains into the analysis, so the
     # response returns immediately with ``job.status == "uploading"``. Starting
     # the analysis from here would race the transcode (the source does not exist
-    # yet) and surface as "还没有上传媒体".
-    session = service.ingest_file(
+    # yet) and surface as "还没有上传媒体"。
+    session = service.ingest_files(
         session["session_id"],
-        filename,
-        recording.file,
-        background=True,
+        files,
         autostart_analysis=True,
         speaker_count=speaker_count,
         transcribe=transcribe,
     )
+    message = (
+        f"已上传 {len(files)} 个媒体文件，正在转码并分析。"
+        if len(files) > 1
+        else "媒体已上传，正在转码并分析。"
+    )
     return {
-        "message": "媒体已上传，正在转码并分析。",
+        "message": message,
         "session": deps._public_media_session(service, service.load(session["session_id"])),
     }
 
@@ -129,6 +143,10 @@ def activate_media_dataset(session_id: str, request: MediaExportRequest) -> dict
     if result.get("text_ready"):
         mark_step("asr", ST_DONE, note="媒体采集自动转写")
     mark_step("correct", ST_DONE, note=f"媒体采集导入 {result['copied']} 句")
+    # 换了新素材，旧数据集的「特征提取/训练已完成」状态必须归零：训练状态是全局
+    # 的，若保留 done，界面会允许直接训练，实际跑在上一份数据集的特征上。
+    mark_step("feat", ST_PENDING, note="新素材已导入，需重新提取特征")
+    mark_step("train", ST_PENDING, note="新素材已导入，需重新提取特征")
     return {
         "message": f"已写入训练工作区：{result['copied']} 句。回到训练页即可做特征提取。",
         **result,
