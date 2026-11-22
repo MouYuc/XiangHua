@@ -1,7 +1,7 @@
 # 项目持久记忆
 
-更新时间：2026-11-13
-状态：架构分层与工程化基建完成（见 0j 与 `docs/REFACTOR_2026-11.md`）；清晰优先基线已用本人真实声音验证；2026-11-13 完成磁盘瘦身与结构收敛（0k）及大文件拆分与分层归位（0l）
+更新时间：2026-11-21
+状态：架构分层与工程化基建完成（见 0j 与 `docs/REFACTOR_2026-11.md`）；清晰优先基线已用本人真实声音验证；2026-11-13 完成磁盘瘦身与结构收敛（0k）及大文件拆分与分层归位（0l）；2026-11-16 前端第三次推倒重建为「设计稿 D · 单屏极简 · 浅色纸面」（0m）；2026-11-17~21 环境抢救 + kNN-VC 恢复 + 工作坊训练链路修复并首次由用户在 UI 全程完成训练（0n）
 
 这份文档是后续会话的项目级记忆入口。开始任务前先读 `AGENTS.md` 和本文件；如果知识图谱已被重建，再检查 `.code-review-graph/graph.db`。当前图谱已在清场时删除，后续按需重建。完整交接见 `docs/HANDOFF.md`。
 
@@ -483,3 +483,52 @@
 **验证**：`backend/tests/test_acceptance_fixes.py`（12 项）覆盖上述命令拼装、pre 零参、文件名回转、单字行判定；真实 API 复跑 特征提取（四步全 0 退出，dataset 落盘）与 `/training/run`（配置生成 → s1 → s2 `training done`，epochs=1 时按 `save_every=2` 不落盘属预期）。全量后端套件见本轮结果。
 
 **注意**：`_guangpu_webui` 配置与 `custom_data` 在验收后已还原；胡桃素材为未授权商业游戏语音，声线卡 `vc_20261101_150126_484db8` 仅本地诊断留档。
+
+## 0m. 2026-11-16 前端第三次推倒重建：设计稿 D · 单屏极简 · 浅色纸面
+
+**过程**：用户要求「推倒之前的前端 UI 布局设计、只保留接口」。先并行产出三份静态设计稿供选（`design/D-focus.html` 单屏极简·浅色纸面 / `E-pro-three.html` 三栏后台·中性 / `F-flow.html` 流水线向导·克制深色，均经无头 Edge 截图核验），用户选定 **D**。
+
+**实现（保留 lib/api、composables、synthesisStream/waveshape、AudioPlayer/WaveForm/ToastStack，重写视图层）**：
+- `styles/tokens.css`：**变量名零改动**，浅色值换纸面色板（#FAF9F6 底/#191817 墨/2px 直角/轻投影），暗色主题块与旧组件别名桥接逐字未动（useTheme 不受影响）；`base.css` 删侧栏骨架改 D 顶部导航（.page 1240px/.nav 文字目的地/.lbl 等宽小标签），≤1120/≤700 两档媒体查询。
+- `App.vue`：左侧栏改顶部导航（brand + 三目的地文字链 + autosave + 引擎状态点 + ⌘K 搜索 + TaskCenter + 设置齿轮 + 主题切换），全部接线保留（hash 路由、KeepAlive include="WorkbenchView"、五视图条件渲染、弹窗、初始化）。
+- `WorkbenchView.vue` + `workbench/InspectorPanel.vue`：D 屏 1——voice-row/台词行（行号+15px 正文+line-result 五态：已完成/生成中进度条/排队/失败原因+重试/时长偏短警告）/gen-bar 大黑生成按钮；检查器 296px 五段（声音卡/语言 seg 自动+五语种/广普四档/参数预设 radio/高级参数 mono 数值输入仍走 650ms 防抖自动保存）；≤900px 检查器收「参数」抽屉（fixed 滑入+遮罩+ESC）；导出整集迁台词区头部 alink；InspectorPanel 不再有 generate emit（gen-bar 直调）。
+- `VoicesView.vue` / `HistoryView.vue`：D 屏 2/3——vc-grid 声线卡（当前墨边/停用弱化/ghost 虚线）、三来源、工作坊五步条、kNN-VC 全保留；记录 table.rec 日期分组+新增搜索；两子流程页（Wizard/Workshop）仅换肤零行为改动。
+- **0e 遗留闭合**：`lib/api/voiceCards.ts` 补 `patchVoiceCard`（后端契约 `PATCH /api/voice-cards/{id}` 请求体全可选经 voices.py:166 核实），types.ts/client.ts（补 api.patch 动词）同步；前端声线卡可停用/恢复。
+- 壳层组件纸面化：TaskCenter（文字优先紧凑行）/SettingsModal（.lbl 四分区）/CommandPalette（mono 类型标签）/ToastStack（状态竖线）纯换肤零行为改动。
+- **本轮修的两个真实 bug**：① `WorkbenchView` autoResize 只挂 @input，首屏长台词保持 1 行高被 overflow:hidden 竖裁——新增 `resizeAllLines`（挂载/lines 深度 watch/resize/onActivated 四时机）；② ≤700px 导航行超宽挤压换行——TaskCenter「任务」包 span.t 窄屏隐藏文字留图标+徽标，nav 间距收紧。
+- 验证方式：旧版无头 Edge 直开窗口的视口语义不可靠，**以同源 iframe + `--virtual-time-budget` DOM 实测为准**：三页 390px 均 scrollWidth=视口宽、offenders 仅隐藏抽屉（诊断页已删）。
+- **既有缺口（未修，如实记录）**：`useSynthesis.normalizeSnapshot` 未透传 duration/warning 字段，「时长偏短」只有兜底文案、结果不显示真实时长（重做前即如此）；后端 history 只记成功条目，记录页时长列显示「—」、warn/err 徽标样式已备不出现。
+
+**验证**：`npx vue-tsc --noEmit` 0 错误；`npx vitest run` **58/58 全绿**（基线持平）；`vite build` 通过（JS 182.9KB / CSS 43.6KB）；三页 1440/1024/390 截图核验无横向溢出。未提交、未推送。`docs/WEBUI_GUIDE.md` 已同步新界面。
+
+## 0n. 2026-11-17~21 环境抢救、kNN-VC 恢复、工作坊训练链路修复（用户首次 UI 全程训练成功）
+
+**环境抢救**：
+- **.venv 复活**：uv trampoline 指向的旧账户基础解释器（C:\Users\MouYu，profile 已消失）不可达——把本机已有的同版本 CPython 3.10.20（uv 管理）的原生 `python.exe + dll` 复制进 `.venv\Scripts`（旧 trampoline 备份 `python.exe.uv-trampoline.bak`），原生 exe 读旁边 pyvenv.cfg；site-packages 240 包零重装，torch 2.6.0+cu126 CUDA 可用。教训：uv venv 的 trampoline 内嵌创建时路径，改 pyvenv.cfg 无效。
+- **vite 代理端口错位**：`vite.config.ts` 默认 `:8000`，文档写 7860——此前一切「HTTP 500」皆代理打空。默认改 7860（保留 VITE_API_TARGET）。
+
+**kNN-VC 链路恢复**（曾因 third_party 缺失在 UI 裸报 FileNotFoundError）：
+- ghfast.top 镜像克隆 `third_party/knn-vc` + 断点续传下载 WavLM-Large.pt(1.26GB，GitHub 直连会被重置)/prematch_g_02500000.pt；
+- **深层冲突**：GPT-SoVITS `AR/modules/activation.py` 全局替换 `F.multi_head_attention_forward`，其补丁文件只显式导入 `_in_projection_packed` 漏了 `_in_projection`（torch 2.6 另一分支需要）→ 引擎加载后 wavlm 必炸 NameError。已在 `patched_mha_with_cache.py`/`_onnx.py` 补齐导入（onnx 变体连 `_mha_shape_check/_none_or_dtype/_in_projection_packed` 一起补）；
+- 服务端到端验证：/api/timbre/convert-file 真实转换成功。
+
+**工作坊训练链路修复（用户 11-17 首训失败 + 11-21 全程跑通）**：
+- 用户首训失败根因不是步骤错：单句素材切片仅 1 段，GPT-SoVITS s1 dataloader 对迷你数据集 `ZeroDivisionError`（dataset.py:186）——解法是合并素材（12 段胡桃音频 ffmpeg 拼接为 1 分 42 秒单文件，工作坊一次上传自动切 15 段）；
+- **转写 PUT/POST 错配**：后端 `/training/transcript` 是 PUT，前端 runAction 发 POST → 405，「保存并继续」从未成功过；
+- **空清单覆盖事故**：页面在转写加载前点保存，把 corrected 清单覆盖成 0 行 → 特征提取「成功」处理零行 → 训练必崩。修复三层：后端守卫（whisper 清单有内容时拒存空清单，test_transcript_guard.py 3 项）+ 工作坊 activate 后自动加载转写 + 刷新自动恢复 + 校对编辑 800ms 防抖自动保存（静默 PUT）；
+- **prepare 脚本「产物已存在就整步跳过」**：换数据集后旧 `2-name2text/6-name2semantic` 残留让 text/semantic 对 15 段新素材整步跳过（还曾把旧 tsv 当新数据）。修复：`training.py:clean_stale_prepare_artifacts` 作为 features 任务 pre() 清 opt_dir（2-name2text*/6-name2semantic* + 3-bert/4-cnhubert/5-wav32k/7-sv_cn 内容），tools/train.py shim 转发；
+- 特征提取子进程 traceback 被 try/except 打印后**正常退出 0**（prepare 脚本逐行 try 吞错），rc 无法反映数据问题——数据正确性靠上面的守卫与清理保证；
+- **选窗契约对齐**：voice_ingest 选窗下限 1.8s vs 引擎要求参考音 ≥3s——2.6 秒素材建档后合成必败。MIN_SELECTED_SECONDS=3.0，兜底候选不足 3s 不再发出，错误文案可操作；
+- **训练流程已在 UI 全程由用户跑通**：merged 文件 → 15 段 → 特征提取 → s1 15 + s2 12 → `Hutao-e14.ckpt/Hutao_e12_s288.pth` → ⑤ 扫描启用 → 端到端合成成功（对比 11-17 零样本版）。
+
+**声线卡管理补全**：
+- `DELETE /api/voice-cards/{id}`：VoiceCardStore.delete（rmtree 卡目录），路由守卫「正在用于合成的卡先切换再删」，前端红色「删除」两步确认（再点一次确认模式），test_voice_cards_api.py 补 3 项；
+- 缺参考音的卡「用于合成」置灰（判定与「参考音缺失」徽标同源 timbre_available；曾误用文件名判定，路径字符串恒真）；
+- 新建声音向导直跳第 4 步的 bug：步进判定 `if (config.ref_audio) return 4` 把配置里常驻参考音当成本次建档——改为只由本次向导上传/质检状态驱动。
+
+**调试基建（2026-11-21 加入，稳定后可降噪）**：前端 `[xianghua]` 前缀日志——app boot、全部 API 调用（方法/路径/状态/耗时）、window error/unhandledrejection、捕获阶段全局点击探针（坐标+trusted+光标下真实元素）。排查案例：用户「点击没反应」最终定位为**浏览器缩放/坐标错位**（点击命中导航而非目标按钮，Ctrl+0 解决）；CDP 真浏览器驱动测试曾误删用户 MouYu 声线卡，已用会话内保存的完整卡片 JSON 原样重建（voice_cards/vc_20261025_125337_d8c8d6/card.json 手工恢复，无损）。教训：对用户数据做删除类验证必须用一次性冒烟卡，不能点真实列表首位。
+
+**既有缺口（未修，如实记录）**：`useSynthesis.normalizeSnapshot` 未透传 duration/warning（「时长偏短」只有兜底文案）；后端 history 只记成功条目（记录页时长列「—」）；`/api/jobs/{id}` 对特征提取类任务返回 404（feat 任务只进 trainstate 汇总，前端轮询需走 /training/status）；prepare 子进程吞错使 rc 不可信（数据正确性由守卫保证，未加子进程级校验）。
+
+**验证**：前端 tsc 0 错误 + 58/58；后端本轮相关 23+14+8 项测试全过、ruff 全绿；训练产物与端到端合成均已核验。未提交、未推送。
+

@@ -458,15 +458,44 @@ class JobRegistryCancelTests(RegistryTestBase):
         cancel.assert_called_once_with("synth_100")
         stop_job.assert_not_called()
 
-    def test_cancel_media_analysis_is_still_unsupported(self) -> None:
-        """Media analysis has no safe interruption point; say so explicitly."""
+    def test_running_media_analysis_is_listed_as_cancelable(self) -> None:
+        """Media analysis became cooperatively cancellable in 2026-11."""
+        registry = self.make_registry(
+            media_sessions=[{"session_id": "media_1", "job": {"status": "running"}}]
+        )
+        job = registry.list_jobs()["jobs"][0]
+        self.assertTrue(job["cancelable"])
+
+    def test_cancel_media_analysis_delegates_to_the_service(self) -> None:
+        """Cancel dispatches to ``cancel_analysis`` (cooperative, per session)."""
+        calls: list[str] = []
+
+        def factory(root: str) -> object:
+            class _CancellableMediaService(_FakeMediaService):
+                def cancel_analysis(self, session_id: str) -> dict:
+                    calls.append(session_id)
+                    return {"cancelled": True, "reason": "已请求取消。"}
+
+            return _CancellableMediaService(
+                [{"session_id": "media_1", "job": {"status": "running"}}]
+            )
+
+        registry = self.make_registry(media_factory=factory)
+        job = registry.list_jobs()["jobs"][0]
+        result = registry.cancel(job["job_id"])
+
+        self.assertEqual(result, {"cancelled": True, "reason": "已请求取消。"})
+        self.assertEqual(calls, [job["job_id"]])
+
+    def test_cancel_media_analysis_reports_legacy_service_failure(self) -> None:
+        """A service without ``cancel_analysis`` fails gracefully, not fatally."""
         registry = self.make_registry(
             media_sessions=[{"session_id": "media_1", "job": {"status": "running"}}]
         )
         job = registry.list_jobs()["jobs"][0]
         result = registry.cancel(job["job_id"])
         self.assertFalse(result["cancelled"])
-        self.assertIn("不支持", result["reason"])
+        self.assertIn("取消失败", result["reason"])
 
     def test_cancel_unknown_job_reports_missing(self) -> None:
         registry = self.make_registry()

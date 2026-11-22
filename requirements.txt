@@ -32,6 +32,9 @@ transformers==4.50.0
 faster-whisper==1.2.1
 huggingface-hub==0.36.2
 sentencepiece==0.2.2
+# voice_ingest.normalize_transcript converts Traditional->Simplified zh
+# transcripts directly; previously only arrived as a transitive pin.
+opencc==1.4.1
 
 # --- Chinese/Cantonese text front-end (pronunciation layer) ---
 ToJyutping==3.2.0
